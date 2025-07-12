@@ -1,5 +1,5 @@
 {
-    "version": "3.22.5",
+    "version": "3.22.6",
     "last_update": "2025-07-12",
-    "description": "[功能更新]\r\n- 修复后台日志卡住的bug"
+    "description": "[功能更新]\r\n- 修复安全漏洞"
 }
