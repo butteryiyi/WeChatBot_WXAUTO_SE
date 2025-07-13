@@ -260,7 +260,6 @@ def login_required(f):
     return decorated_function
 
 @app.route('/start_bot', methods=['POST'])
-@login_required
 def start_bot():
     global bot_process
     if bot_process is None or bot_process.poll() is not None:
@@ -292,7 +291,6 @@ def start_bot():
     return {'status': 'started'}, 200
 
 @app.route('/stop_bot', methods=['POST'])
-@login_required
 def stop_bot():
     global bot_process, last_heartbeat_time, current_bot_pid
     # 检查状态时，也考虑 current_bot_pid 是否指示有活跃进程
@@ -329,7 +327,6 @@ def stop_bot():
         return {'status': 'stopped'}, 200
     
 @app.route('/bot_status')
-@login_required
 def bot_status():
     global bot_process, last_heartbeat_time, current_bot_pid
     
@@ -638,7 +635,6 @@ def stop_bot_process(pid_to_kill=None):
         app.logger.warning(f"调用 stop_bot_process 后，current_bot_pid ({current_bot_pid}) 仍有值。可能存在未完全停止的实例或状态不同步。但心跳已重置。")
 
 @app.route('/bot_heartbeat', methods=['POST'])
-@login_required
 def bot_heartbeat():
     global last_heartbeat_time, current_bot_pid
     try:
@@ -1437,7 +1433,6 @@ def stream():
     )
 
 @app.route('/api/log', methods=['POST'])
-@login_required
 def receive_bot_log():
     try:
         # 增加Content-Type检查
@@ -1917,9 +1912,7 @@ if __name__ == '__main__':
                '/save_all_reminders' in msg or \
                '/get_all_reminders' in msg or \
                '/api/get_chat_context_users' in msg or \
-               '/bot_heartbeat' in msg or \
-               'Bad request version' in msg or \
-               'Bad request syntax' in msg:
+               '/bot_heartbeat' in msg:
                 return False
             return True
 
