@@ -368,6 +368,12 @@ class Updater:
         
         while True:
             try:
+            # --- 这是我们新加的代码 ---
+                timestamp = int(time.time())
+            # 判断原始链接是否已有参数，来决定是用 ? 还是 &
+                separator = '&' if '?' in download_url else '?'
+                unique_download_url = f"{download_url}{separator}_cache_bust={timestamp}"
+            # --- 新加代码结束 ---
                 proxied_url = self.get_proxy_url(download_url)
                 logger.info(f"正在从 {proxied_url} 下载更新...")
                 
