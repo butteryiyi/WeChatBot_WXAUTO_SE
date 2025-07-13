@@ -376,6 +376,8 @@ class Updater:
             # --- 新加代码结束 ---
                 proxied_url = self.get_proxy_url(download_url)
                 logger.info(f"正在从 {proxied_url} 下载更新...")
+                # 为了方便确认，我们加一句打印
+                print(f"正在下载防缓存链接: {proxied_url}")
                 
                 response = requests.get(
                     proxied_url,
