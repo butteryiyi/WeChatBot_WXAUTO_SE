@@ -1,5 +1,5 @@
 {
-    "version": "3.22.8",
+    "version": "3.22.9",
     "last_update": "2025-07-14",
-    "description": "[功能更新]\r\n- 修复一些莫名其妙的bug"
+    "description": "[功能更新]\r\n- 修改update更新机制，防止缓存"
 }
