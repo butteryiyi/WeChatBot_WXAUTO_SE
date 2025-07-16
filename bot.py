@@ -1245,82 +1245,91 @@ def message_listener(msg, chat):
             handle_wxauto_message(msg, who)
 
 def recognize_image_with_moonshot(image_path, is_emoji=False):
-    # 先暂停向API发送消息队列
     global can_send_messages
-    can_send_messages = False
-
-    """使用AI识别图片内容并返回文本"""
+    with can_send_messages_lock:
+        can_send_messages = False
     try:
+        """使用AI识别图片内容并返回文本"""
+        try:
 
-        processed_image_path = image_path
-        
-        # 读取图片内容并编码
-        with open(processed_image_path, 'rb') as img_file:
-            image_content = base64.b64encode(img_file.read()).decode('utf-8')
+            processed_image_path = image_path
             
-        headers = {
-            'Authorization': f'Bearer {MOONSHOT_API_KEY}',
-            'Content-Type': 'application/json'
-        }
-        text_prompt = "请用中文描述这张图片的主要内容或主题。不要使用'这是'、'这张'等开头，直接描述。如果有文字，请包含在描述中。" if not is_emoji else "请用中文简洁地描述这个聊天窗口最后一张表情包所表达的情绪、含义或内容。如果表情包含文字，请一并描述。注意：1. 只描述表情包本身，不要添加其他内容 2. 不要出现'这是'、'这个'等词语"
-        data = {
-            "model": MOONSHOT_MODEL,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_content}"}},
-                        {"type": "text", "text": text_prompt}
-                    ]
-                }
-            ],
-            "temperature": MOONSHOT_TEMPERATURE
-        }
-        
-        url = f"{MOONSHOT_BASE_URL}/chat/completions"
-        response = requests.post(url, headers=headers, json=data)
-        response.raise_for_status()
-        result = response.json()
-        recognized_text = result['choices'][0]['message']['content']
-        
-        if is_emoji:
-            # 如果recognized_text包含"最后一张表情包是"，只保留后面的文本
-            if "最后一张表情包" in recognized_text:
-                recognized_text = recognized_text.split("最后一张表情包", 1)[1].strip()
-            recognized_text = "发送了表情包：" + recognized_text
-        else:
-            recognized_text = "发送了图片：" + recognized_text
-            
-        logger.info(f"AI图片识别结果: {recognized_text}")
-        
-        # 清理临时文件
-        if is_emoji and os.path.exists(processed_image_path):
-            try:
-                os.remove(processed_image_path)
-                logger.debug(f"已清理临时表情: {processed_image_path}")
-            except Exception as clean_err:
-                logger.warning(f"清理临时表情图片失败: {clean_err}")
+            # 读取图片内容并编码
+            with open(processed_image_path, 'rb') as img_file:
+                image_content = base64.b64encode(img_file.read()).decode('utf-8')
                 
-        # 恢复向Deepseek发送消息队列
-        can_send_messages = True
-        return recognized_text
+            headers = {
+                'Authorization': f'Bearer {MOONSHOT_API_KEY}',
+                'Content-Type': 'application/json'
+            }
+            text_prompt = "请用中文描述这张图片的主要内容或主题。不要使用'这是'、'这张'等开头，直接描述。如果有文字，请包含在描述中。" if not is_emoji else "请用中文简洁地描述这个聊天窗口最后一张表情包所表达的情绪、含义或内容。如果表情包含文字，请一并描述。注意：1. 只描述表情包本身，不要添加其他内容 2. 不要出现'这是'、'这个'等词语"
+            data = {
+                "model": MOONSHOT_MODEL,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_content}"}},
+                            {"type": "text", "text": text_prompt}
+                        ]
+                    }
+                ],
+                "temperature": MOONSHOT_TEMPERATURE
+            }
+            
+            url = f"{MOONSHOT_BASE_URL}/chat/completions"
+            response = requests.post(url, headers=headers, json=data)
+            response.raise_for_status()
+            result = response.json()
+            recognized_text = result['choices'][0]['message']['content']
+            
+            if is_emoji:
+                # 如果recognized_text包含"最后一张表情包是"，只保留后面的文本
+                if "最后一张表情包" in recognized_text:
+                    recognized_text = recognized_text.split("最后一张表情包", 1)[1].strip()
+                recognized_text = "发送了表情包：" + recognized_text
+            else:
+                recognized_text = "发送了图片：" + recognized_text
+                
+            logger.info(f"AI图片识别结果: {recognized_text}")
+            
+            # 清理临时文件
+            if is_emoji and os.path.exists(processed_image_path):
+                try:
+                    os.remove(processed_image_path)
+                    logger.debug(f"已清理临时表情: {processed_image_path}")
+                except Exception as clean_err:
+                    logger.warning(f"清理临时表情图片失败: {clean_err}")
+                    
+            # 恢复向Deepseek发送消息队列
+            with can_send_messages_lock:
+                can_send_messages = True
+            return recognized_text
 
+        except Exception as e:
+            logger.error(f"调用AI识别图片失败: {str(e)}", exc_info=True)
+            # 恢复向Deepseek发送消息队列
+            with can_send_messages_lock:
+                can_send_messages = True
+            return ""
     except Exception as e:
         logger.error(f"调用AI识别图片失败: {str(e)}", exc_info=True)
-        # 恢复向Deepseek发送消息队列
-        can_send_messages = True
+        with can_send_messages_lock:
+            can_send_messages = True
         return ""
 
 def handle_emoji_message(msg, who):
     global emoji_timer
     global can_send_messages
-    can_send_messages = False
-
+    with can_send_messages_lock:
+        can_send_messages = False
     def timer_callback():
-        with emoji_timer_lock:           
-            handle_wxauto_message(msg, who)   
-            emoji_timer = None       
-
+        with emoji_timer_lock:
+            handle_wxauto_message(msg, who)
+            global emoji_timer
+            emoji_timer = None
+            with can_send_messages_lock:
+                can_send_messages = True
     with emoji_timer_lock:
         if emoji_timer is not None:
             emoji_timer.cancel()
@@ -1690,24 +1699,28 @@ def process_user_messages(user_id):
 # (这是全新的 send_reply 函数，请用它替换原来的)
 
 def send_reply(user_id, sender_name, username, original_merged_message, reply):
-    """发送回复消息，能处理多个穿插的表情包和分隔符，并分段发送。"""
     global is_sending_message
     if not reply:
         logger.warning(f"尝试向 {user_id} 发送空回复。")
         return
 
-    # --- 如果正在发送，等待 ---
     wait_start_time = time.time()
     MAX_WAIT_SENDING = 15.0  # 最大等待时间（秒）
-    while is_sending_message:
+    # === 用锁保护等待 ===
+    while True:
+        with is_sending_message_lock:
+            if not is_sending_message:
+                is_sending_message = True
+                break
         if time.time() - wait_start_time > MAX_WAIT_SENDING:
-            logger.warning(f"等待 is_sending_message 标志超时，准备向 {user_id} 发送回复，继续执行。")
+            logger.warning(f"等待 is_sending_message 标志超时，准备向 {user_id} 发送回复，继续执行。强制重置。")
+            with is_sending_message_lock:
+                is_sending_message = False
             break
         logger.debug(f"等待向 {user_id} 发送回复，另一个发送正在进行中。")
         time.sleep(0.5)
 
     try:
-        is_sending_message = True
         logger.info(f"准备向 {sender_name} (用户ID: {user_id}) 发送组合消息")
 
         # 新增：在分割和发送之前，将完整的AI回复作为一个整体记录到记忆中
@@ -1818,7 +1831,8 @@ def send_reply(user_id, sender_name, username, original_merged_message, reply):
     except Exception as e:
         logger.error(f"向 {user_id} 发送回复失败: {str(e)}", exc_info=True)
     finally:
-        is_sending_message = False
+        with is_sending_message_lock:
+            is_sending_message = False
 
 
 
@@ -3354,6 +3368,29 @@ def initialize_all_user_timers():
         reset_user_timer(user)
     logger.info("所有用户计时器已重新初始化")
 
+# === 新增：全局锁 ===
+is_sending_message_lock = threading.Lock()
+can_send_messages_lock = threading.Lock()
+
+def status_self_check():
+    check_interval = 10
+    stuck_threshold = 60  # 超过60秒认为卡死
+    last_sending_time = [time.time()]
+    while True:
+        # 检查is_sending_message
+        with is_sending_message_lock:
+            if is_sending_message:
+                if time.time() - last_sending_time[0] > stuck_threshold:
+                    logger.error("is_sending_message卡死，自动重置！")
+                    is_sending_message = False
+                    last_sending_time[0] = time.time()
+            else:
+                last_sending_time[0] = time.time()
+        # 检查can_send_messages
+        with can_send_messages_lock:
+            if not can_send_messages:
+                logger.warning("can_send_messages为False，检查是否卡死。")
+        time.sleep(check_interval)
 
 def main():
     try:
@@ -3473,6 +3510,10 @@ def main():
         monitor_memory_usage_thread.daemon = True
         monitor_memory_usage_thread.start()
         logger.info("内存使用监控线程已启动。")
+
+        # 启动自检线程
+        status_check_thread = threading.Thread(target=status_self_check, name="StatusSelfCheck", daemon=True)
+        status_check_thread.start()
 
         wx.KeepRunning()
 
