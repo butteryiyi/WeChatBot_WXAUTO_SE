@@ -1,5 +1,5 @@
 {
-    "version": "3.22.9",
-    "last_update": "2025-07-14",
-    "description": "[功能更新]\r\n- 修改update更新机制，防止缓存"
+    "version": "3.22.10",
+    "last_update": "2025-07-16",
+    "description": "[功能更新]\r\n- 修复全局变量卡死问题"
 }
