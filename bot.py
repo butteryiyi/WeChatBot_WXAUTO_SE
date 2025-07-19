@@ -31,6 +31,8 @@ import queue
 import json
 from threading import Timer
 from bs4 import BeautifulSoup
+EMOJI_SEND_INTERVAL = 1.0  # 发送表情包的延迟（秒）
+TEXT_SEND_INTERVAL = 0.5   # 发送文本消息的延迟（秒）
 from urllib.parse import urlparse
 import os
 os.environ["PROJECT_NAME"] = 'iwyxdxl/WeChatBot_WXAUTO_SE'
@@ -388,7 +390,6 @@ emoji_timer = None
 emoji_timer_lock = threading.Lock()
 # 全局变量，控制消息发送状态
 can_send_messages = True
-is_sending_message = False
 
 # --- 定时重启相关全局变量 ---
 program_start_time = 0.0 # 程序启动时间戳
@@ -1590,7 +1591,7 @@ def check_inactive_users():
         with queue_lock:
             for username, user_data in user_queues.items():
                 last_time = user_data.get('last_message_time', 0)
-                if current_time - last_time > QUEUE_WAITING_TIME and can_send_messages and not is_sending_message: 
+                if current_time - last_time > QUEUE_WAITING_TIME and can_send_messages: 
                     inactive_users.append(username)
 
         for username in inactive_users:
@@ -1699,140 +1700,78 @@ def process_user_messages(user_id):
 # (这是全新的 send_reply 函数，请用它替换原来的)
 
 def send_reply(user_id, sender_name, username, original_merged_message, reply):
-    global is_sending_message
     if not reply:
         logger.warning(f"尝试向 {user_id} 发送空回复。")
         return
 
-    wait_start_time = time.time()
-    MAX_WAIT_SENDING = 15.0  # 最大等待时间（秒）
-    # === 用锁保护等待 ===
-    while True:
-        with is_sending_message_lock:
-            if not is_sending_message:
-                is_sending_message = True
-                break
-        if time.time() - wait_start_time > MAX_WAIT_SENDING:
-            logger.warning(f"等待 is_sending_message 标志超时，准备向 {user_id} 发送回复，继续执行。强制重置。")
-            with is_sending_message_lock:
-                is_sending_message = False
-            break
-        logger.debug(f"等待向 {user_id} 发送回复，另一个发送正在进行中。")
-        time.sleep(0.5)
+    logger.info(f"准备向 {sender_name} (用户ID: {user_id}) 发送组合消息")
 
-    try:
-        logger.info(f"准备向 {sender_name} (用户ID: {user_id}) 发送组合消息")
+    # 新增：在分割和发送之前，将完整的AI回复作为一个整体记录到记忆中
+    if ENABLE_MEMORY:
+        role_name = prompt_mapping.get(username, username)
+        log_ai_reply_to_memory(username, role_name, reply)
 
-        # 新增：在分割和发送之前，将完整的AI回复作为一个整体记录到记忆中
-        if ENABLE_MEMORY:
-            role_name = prompt_mapping.get(username, username)
-            log_ai_reply_to_memory(username, role_name, reply)
+    # --- 全新的消息解析与发送队列构建逻辑 ---
+    message_actions = []
 
-        # --- 全新的消息解析与发送队列构建逻辑 ---
-        message_actions = []
+    if ENABLE_EMOJI_SENDING:
+        try:
+            # 1. 获取所有有效的表情包标签（即文件夹名）
+            valid_tags = {d for d in os.listdir(EMOJI_DIR) if os.path.isdir(os.path.join(EMOJI_DIR, d))}
+        except FileNotFoundError:
+            logger.error(f"表情包根目录 EMOJI_DIR 未找到: {EMOJI_DIR}")
+            valid_tags = set()
 
-        if ENABLE_EMOJI_SENDING:
-            try:
-                # 1. 获取所有有效的表情包标签（即文件夹名）
-                valid_tags = {d for d in os.listdir(EMOJI_DIR) if os.path.isdir(os.path.join(EMOJI_DIR, d))}
-            except FileNotFoundError:
-                logger.error(f"表情包根目录 EMOJI_DIR 未找到: {EMOJI_DIR}")
-                valid_tags = set()
+        # 2. 使用正则表达式切分回复，同时保留表情标签作为独立元素
+        parts = re.split(r'(\[.*?\])', reply)
 
-            # 2. 使用正则表达式切分回复，同时保留表情标签作为独立元素
-            # 例如: "你好[开心]今天好吗？[疑问]" -> ['你好', '[开心]', '今天好吗？', '[疑问]', '']
-            parts = re.split(r'(\[.*?\])', reply)
-
-            for part in parts:
-                if not part:  # 跳过切分后可能产生的空字符串
-                    continue
-
-                # 3. 判断每个部分是文本还是表情标签
-                match = re.match(r'\[(.*?)\]', part)
-                if match:
-                    tag = match.group(1)
-                    # 4. 验证标签是否有效
-                    if len(tag) <= EMOJI_TAG_MAX_LENGTH and tag in valid_tags:
-                        emoji_path = send_emoji(tag) # send_emoji函数返回一个随机表情路径
-                        if emoji_path:
-                            message_actions.append(('emoji', emoji_path))
-                            logger.info(f"解析出有效表情标签: [{tag}]，已加入发送队列。")
-                        else: # 如果send_emoji失败，当作普通文本处理
-                            message_actions.append(('text', part))
+        for part in parts:
+            if not part:
+                continue
+            match = re.match(r'\[(.*?)\]', part)
+            if match:
+                tag = match.group(1)
+                if len(tag) <= EMOJI_TAG_MAX_LENGTH and tag in valid_tags:
+                    emoji_path = send_emoji(tag)
+                    if emoji_path:
+                        message_actions.append(('emoji', emoji_path))
+                        logger.info(f"解析出有效表情标签: [{tag}]，已加入发送队列。")
                     else:
-                        # 是[xxx]格式，但不是有效的表情标签。现在根据长度判断是丢弃还是作为文本处理。
-                        if len(tag) > EMOJI_TAG_MAX_LENGTH:
-                             # 标签长度大于阈值，判定为普通文本被[]包裹，作为文本处理。
-                            logger.warning(f"检测到长文本 '[{tag}]' (长度 {len(tag)} > {EMOJI_TAG_MAX_LENGTH}) 被方括号包裹，将作为普通文本处理。")
-                            text_to_process = remove_timestamps(part)
-                            if REMOVE_PARENTHESES:
-                                text_to_process = remove_parentheses_and_content(text_to_process)
-                            sub_parts = split_message_with_context(text_to_process)
-                            for sub_part in sub_parts:
-                                if sub_part.strip():
-                                    message_actions.append(('text', sub_part.strip()))
-                        else:
-                            # 标签长度小于等于阈值，但不是有效标签（文件夹不存在），判定为无效短标签，丢弃。
-                            logger.warning(f"检测到无效的短标签 '[{tag}]' (长度 {len(tag)} <= {EMOJI_TAG_MAX_LENGTH} 且文件夹不存在)，将被忽略。")
-                            pass # 明确丢弃
+                        message_actions.append(('text', part))
                 else:
-                    # 5. 如果是普通文本，应用原有的文本清理和分割逻辑
-                    text_to_process = remove_timestamps(part)
-                    if REMOVE_PARENTHESES:
-                        text_to_process = remove_parentheses_and_content(text_to_process)
-                    
-                    # 使用 split_message_with_context 对这段文本进行再分割(按$等符号)
-                    sub_parts = split_message_with_context(text_to_process)
-                    for sub_part in sub_parts:
-                        if sub_part.strip():
-                            message_actions.append(('text', sub_part.strip()))
-        else:
-            # 如果表情功能被禁用，则将整个回复作为纯文本处理
-            text_to_send = remove_timestamps(reply)
-            if REMOVE_PARENTHESES:
-                text_to_send = remove_parentheses_and_content(text_to_send)
-            parts = split_message_with_context(text_to_send)
-            message_actions.extend([('text', p) for p in parts if p.strip()])
-        
-        # --- 消息发送循环 (逻辑与原来基本一致) ---
-        if not message_actions:
-             logger.warning(f"回复消息在清理后为空（无有效文本或表情），无法发送给 {user_id}。原始回复: '{reply}'")
-             is_sending_message = False
-             return
+                    if len(tag) > EMOJI_TAG_MAX_LENGTH:
+                        logger.warning(f"检测到长文本 '[{tag}]' (长度 {len(tag)} > {EMOJI_TAG_MAX_LENGTH}) 被方括号包裹，将作为普通文本处理。")
+                        text_to_process = remove_timestamps(part)
+                        if REMOVE_PARENTHESES:
+                            text_to_process = remove_parentheses_and_content(text_to_process)
+                        sub_parts = split_message_with_context(text_to_process)
+                        for sub_part in sub_parts:
+                            if sub_part.strip():
+                                message_actions.append(('text', sub_part.strip()))
+                    else:
+                        logger.warning(f"检测到无效的短标签 '[{tag}]' (长度 {len(tag)} <= {EMOJI_TAG_MAX_LENGTH} 且文件夹不存在)，将被忽略。")
+                        pass
+            else:
+                text_to_process = remove_timestamps(part)
+                if REMOVE_PARENTHESES:
+                    text_to_process = remove_parentheses_and_content(text_to_process)
+                sub_parts = split_message_with_context(text_to_process)
+                for sub_part in sub_parts:
+                    if sub_part.strip():
+                        message_actions.append(('text', sub_part.strip()))
+    else:
+        text_to_process = remove_timestamps(reply)
+        if REMOVE_PARENTHESES:
+            text_to_process = remove_parentheses_and_content(text_to_process)
+        sub_parts = split_message_with_context(text_to_process)
+        for sub_part in sub_parts:
+            if sub_part.strip():
+                message_actions.append(('text', sub_part.strip()))
 
-        for idx, (action_type, content) in enumerate(message_actions):
-            if action_type == 'emoji':
-                try:
-                    wx.SendFiles(filepath=content, who=user_id)
-                    logger.info(f"已向 {user_id} 发送表情包: {os.path.basename(content)}")
-                except Exception as e:
-                    logger.error(f"发送表情包失败: {str(e)}")
-            else: # action_type == 'text'
-                wx.SendMsg(msg=content, who=user_id)
-                logger.info(f"分段回复 {idx+1}/{len(message_actions)} 给 {sender_name}: {content[:50]}...")
-                # 此处的日志记录已被移到函数开头，以确保整个回复只记录一次
-                # if ENABLE_MEMORY:
-                #    role_name = prompt_mapping.get(username, username)
-                #    log_ai_reply_to_memory(username, role_name, content)
-
-            # 处理分段延迟
-            if idx < len(message_actions) - 1:
-                next_action = message_actions[idx + 1]
-                if action_type == 'text' and next_action[0] == 'text':
-                    next_part_len = len(next_action[1])
-                    base_delay = next_part_len * AVERAGE_TYPING_SPEED
-                    random_delay = random.uniform(RANDOM_TYPING_SPEED_MIN, RANDOM_TYPING_SPEED_MAX)
-                    total_delay = max(1.0, base_delay + random_delay)
-                    time.sleep(total_delay)
-                else:
-                    # 表情包前后使用固定随机延迟
-                    time.sleep(random.uniform(0.5, 1.5))
-
-    except Exception as e:
-        logger.error(f"向 {user_id} 发送回复失败: {str(e)}", exc_info=True)
-    finally:
-        with is_sending_message_lock:
-            is_sending_message = False
+    # === 投递到全局队列 ===
+    for action_type, content in message_actions:
+        message_queue.put((action_type, content, user_id))
+        logger.info(f"消息已投递到队列: {action_type}, {content}, {user_id}")
 
 
 
@@ -1979,53 +1918,7 @@ def remove_parentheses_and_content(text: str) -> str:
     processed_text = "\n".join(stripped_lines)
     return processed_text
 
-## def is_emoji_request(text: str) -> Optional[str]:
-    """使用AI判断消息情绪并返回对应的表情文件夹名称"""
-    try:
-        # 概率判断
-        if ENABLE_EMOJI_SENDING and random.randint(0, 100) > EMOJI_SENDING_PROBABILITY:
-            logger.info(f"未触发表情请求（概率{EMOJI_SENDING_PROBABILITY}%）")
-            return None
-        
-        # 获取emojis目录下的所有情绪分类文件夹
-        emoji_categories = [d for d in os.listdir(EMOJI_DIR) 
-                            if os.path.isdir(os.path.join(EMOJI_DIR, d))]
-        
-        if not emoji_categories:
-            logger.warning("表情包目录下未找到有效情绪分类文件夹")
-            return None
 
-        # 构造AI提示词
-        prompt = f"""请判断以下消息表达的情绪，并仅回复一个词语的情绪分类：
-{text}
-可选的分类有：{', '.join(emoji_categories)}。请直接回复分类名称，不要包含其他内容，注意大小写。若对话未包含明显情绪，请回复None。"""
-
-        # 根据配置选择使用辅助模型或主模型
-        if ENABLE_ASSISTANT_MODEL:
-            response = get_assistant_response(prompt, "emoji_detection").strip()
-            logger.info(f"辅助模型情绪识别结果: {response}")
-        else:
-            response = get_deepseek_response(prompt, "system", store_context=False).strip()
-            logger.info(f"主模型情绪识别结果: {response}")
-        
-        # 清洗响应内容
-        response = re.sub(r"[^\w\u4e00-\u9fff]", "", response)  # 移除非文字字符
-
-        # 验证是否为有效分类
-        if response in emoji_categories:
-            return response
-            
-        # 尝试模糊匹配
-        for category in emoji_categories:
-            if category in response or response in category:
-                return category
-                
-        logger.warning(f"未匹配到有效情绪分类，AI返回: {response}")
-        return None
-
-    except Exception as e:
-        logger.error(f"情绪判断失败: {str(e)}")
-        return None
 
 
 def send_emoji(tag: str) -> Optional[str]:
@@ -3374,23 +3267,38 @@ can_send_messages_lock = threading.Lock()
 
 def status_self_check():
     check_interval = 10
-    stuck_threshold = 60  # 超过60秒认为卡死
-    last_sending_time = [time.time()]
+    # stuck_threshold = 60  # 超过60秒认为卡死
+    # last_sending_time = [time.time()]
     while True:
-        # 检查is_sending_message
-        with is_sending_message_lock:
-            if is_sending_message:
-                if time.time() - last_sending_time[0] > stuck_threshold:
-                    logger.error("is_sending_message卡死，自动重置！")
-                    is_sending_message = False
-                    last_sending_time[0] = time.time()
-            else:
-                last_sending_time[0] = time.time()
-        # 检查can_send_messages
+        # 只检查can_send_messages
         with can_send_messages_lock:
             if not can_send_messages:
                 logger.warning("can_send_messages为False，检查是否卡死。")
         time.sleep(check_interval)
+
+# === 全局消息队列和消费线程 ===
+message_queue = queue.Queue()
+
+def message_consumer():
+    while True:
+        try:
+            action_type, content, user_id = message_queue.get()
+            if action_type == 'emoji':
+                wx.SendFiles(filepath=content, who=user_id)
+                logger.info(f"表情包已发送: {content}")
+                time.sleep(EMOJI_SEND_INTERVAL)
+            elif action_type == 'text':
+                wx.SendMsg(msg=content, who=user_id)
+                logger.info(f"文本已发送: {content}")
+                time.sleep(TEXT_SEND_INTERVAL)
+        except Exception as e:
+            logger.error(f"发送消息失败: {str(e)}", exc_info=True)
+        finally:
+            message_queue.task_done()
+
+# 启动消费线程（只需启动一次）
+consumer_thread = threading.Thread(target=message_consumer, daemon=True)
+consumer_thread.start()
 
 def main():
     try:
