@@ -1279,7 +1279,7 @@ def recognize_image_with_moonshot(image_path, is_emoji=False):
             }
             
             url = f"{MOONSHOT_BASE_URL}/chat/completions"
-            response = requests.post(url, headers=headers, json=data)
+            response = requests.post(url, headers=headers, json=data, timeout=30)
             response.raise_for_status()
             result = response.json()
             recognized_text = result['choices'][0]['message']['content']
