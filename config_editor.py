@@ -37,6 +37,7 @@ import logging
 from queue import Queue, Empty
 import time
 import json
+import threading
 
 app = Flask(__name__)
 
@@ -1900,6 +1901,111 @@ def delete_user_memory_summary(username):
 # =========================================================================
 # ===== 新增代码结束 =====
 # =========================================================================
+
+# ========== 用户独立群聊配置 ========== #
+USER_GROUP_CHAT_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'user_group_chat_config.json')
+USER_GROUP_CHAT_CONFIG_LOCK = threading.Lock()
+
+def load_user_group_chat_config():
+    if not os.path.exists(USER_GROUP_CHAT_CONFIG_FILE):
+        return {}
+    with open(USER_GROUP_CHAT_CONFIG_FILE, 'r', encoding='utf-8') as f:
+        try:
+            return json.load(f)
+        except Exception:
+            return {}
+
+def save_user_group_chat_config(data):
+    with USER_GROUP_CHAT_CONFIG_LOCK:
+        with open(USER_GROUP_CHAT_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+@app.route('/api/get_user_group_chat_config/<username>', methods=['GET'])
+@login_required
+def get_user_group_chat_config(username):
+    all_config = load_user_group_chat_config()
+    user_config = all_config.get(username)
+    if not user_config:
+        user_config = {
+            "use_global": False,
+            "ACCEPT_ALL_GROUP_CHAT_MESSAGES": False,
+            "ENABLE_GROUP_AT_REPLY": True,
+            "ENABLE_GROUP_KEYWORD_REPLY": False,
+            "GROUP_KEYWORD_LIST": "",
+            "GROUP_CHAT_RESPONSE_PROBABILITY": 100,
+            "GROUP_KEYWORD_REPLY_IGNORE_PROBABILITY": False
+        }
+    # 全局配置不需要 use_global 字段
+    if username == "__global__":
+        user_config.pop("use_global", None)
+    else:
+        if "use_global" not in user_config:
+            user_config["use_global"] = False
+    return jsonify(user_config)
+
+
+@app.route('/api/save_user_group_chat_config/<username>', methods=['POST'])
+@login_required
+def save_user_group_chat_config_api(username):
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': '无效数据'}), 400
+        
+    all_config = load_user_group_chat_config()
+    # 使用 get 获取旧配置，如果不存在则为空字典
+    old_config = all_config.get(username, {})
+    
+    # 将前端传来的新数据合并到旧数据上
+    merged_config = {**old_config, **data}
+
+    # --- 核心修复：在这里进行严格的类型转换 ---
+    
+    # 定义需要转换类型的字段和它们的目标类型
+    type_map = {
+        "ACCEPT_ALL_GROUP_CHAT_MESSAGES": bool,
+        "ENABLE_GROUP_AT_REPLY": bool,
+        "ENABLE_GROUP_KEYWORD_REPLY": bool,
+        "GROUP_KEYWORD_REPLY_IGNORE_PROBABILITY": bool,
+        "use_global": bool,
+        "GROUP_CHAT_RESPONSE_PROBABILITY": int
+    }
+
+    for key, target_type in type_map.items():
+        if key in merged_config:
+            value = merged_config[key]
+            
+            # 转换为布尔值
+            if target_type == bool:
+                # 兼容前端可能传来的各种布尔值表示：
+                # true (JSON bool), "true" (string), "True" (string), "on", 1
+                if isinstance(value, str):
+                    merged_config[key] = value.lower() in ('true', 'on', '1')
+                else:
+                    # 对于非字符串（如JS的true/false或数字1/0），直接用bool()转换
+                    merged_config[key] = bool(value)
+
+            # 转换为整数
+            elif target_type == int:
+                try:
+                    # 尝试将值转换为整数，如果失败则使用默认值100
+                    merged_config[key] = int(value)
+                except (ValueError, TypeError):
+                    app.logger.warning(f"为用户'{username}'转换 {key} 失败，值: '{value}'。将使用默认值100。")
+                    merged_config[key] = 100 # 设置一个安全合理的默认值
+    
+    # 确保 GROUP_KEYWORD_LIST 是字符串
+    if "GROUP_KEYWORD_LIST" in merged_config:
+        merged_config["GROUP_KEYWORD_LIST"] = str(merged_config["GROUP_KEYWORD_LIST"])
+
+    # 全局配置不保存 use_global 字段
+    if username == "__global__" and "use_global" in merged_config:
+        merged_config.pop("use_global")
+
+    # 将处理好的配置存回
+    all_config[username] = merged_config
+    save_user_group_chat_config(all_config)
+    
+    return jsonify({'status': 'success', 'message': f'配置已为 {username} 保存'})
 
 
 if __name__ == '__main__':

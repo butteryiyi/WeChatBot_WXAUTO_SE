@@ -1161,6 +1161,9 @@ def message_listener(msg, chat):
 
     is_group_chat = is_user_group_chat(who)
 
+    # === 新增：获取群聊专属配置 ===
+    group_cfg = get_group_chat_config(who) if is_group_chat else {}
+
     if not is_group_chat: 
         if who in user_names:
             should_process_this_message = True
@@ -1172,7 +1175,7 @@ def message_listener(msg, chat):
         at_triggered = False
         keyword_triggered = False
 
-        if not ACCEPT_ALL_GROUP_CHAT_MESSAGES and ENABLE_GROUP_AT_REPLY and ROBOT_WX_NAME:
+        if not group_cfg.get('ACCEPT_ALL_GROUP_CHAT_MESSAGES', False) and group_cfg.get('ENABLE_GROUP_AT_REPLY', True) and ROBOT_WX_NAME:
             temp_content_after_at_check = processed_group_content
             
             unicode_at_pattern = f'@{re.escape(ROBOT_WX_NAME)}\u2005'
@@ -1193,15 +1196,15 @@ def message_listener(msg, chat):
                 logger.info(f"群聊 '{who}' 中检测到 @机器人。")
                 processed_group_content = temp_content_after_at_check
 
-        if ENABLE_GROUP_KEYWORD_REPLY:
-            if any(keyword in processed_group_content for keyword in GROUP_KEYWORD_LIST):
+        if group_cfg.get('ENABLE_GROUP_KEYWORD_REPLY', False):
+            if any(keyword in processed_group_content for keyword in group_cfg.get('GROUP_KEYWORD_LIST', [])):
                 keyword_triggered = True
                 logger.info(f"群聊 '{who}' 中检测到关键词。")
         
-        basic_trigger_met = ACCEPT_ALL_GROUP_CHAT_MESSAGES or at_triggered or keyword_triggered
+        basic_trigger_met = group_cfg.get('ACCEPT_ALL_GROUP_CHAT_MESSAGES', False) or at_triggered or keyword_triggered
 
         if basic_trigger_met:
-            if not ACCEPT_ALL_GROUP_CHAT_MESSAGES:
+            if not group_cfg.get('ACCEPT_ALL_GROUP_CHAT_MESSAGES', False):
                 if at_triggered and keyword_triggered:
                     logger.info(f"群聊 '{who}' 消息因 @机器人 和关键词触发基本处理条件。")
                 elif at_triggered:
@@ -1211,15 +1214,15 @@ def message_listener(msg, chat):
             else:
                 logger.info(f"群聊 '{who}' 消息符合全局接收条件，触发基本处理条件。")
 
-            if keyword_triggered and GROUP_KEYWORD_REPLY_IGNORE_PROBABILITY:
+            if keyword_triggered and group_cfg.get('GROUP_KEYWORD_REPLY_IGNORE_PROBABILITY', False):
                 should_process_this_message = True
                 logger.info(f"群聊 '{who}' 消息因触发关键词且配置为忽略回复概率，将进行处理。")
-            elif random.randint(1, 100) <= GROUP_CHAT_RESPONSE_PROBABILITY:
+            elif random.randint(1, 100) <= group_cfg.get('GROUP_CHAT_RESPONSE_PROBABILITY', 100):
                 should_process_this_message = True
-                logger.info(f"群聊 '{who}' 消息满足基本触发条件并通过总回复概率 {GROUP_CHAT_RESPONSE_PROBABILITY}%，将进行处理。")
+                logger.info(f"群聊 '{who}' 消息满足基本触发条件并通过总回复概率 {group_cfg.get('GROUP_CHAT_RESPONSE_PROBABILITY', 100)}%，将进行处理。")
             else:
                 should_process_this_message = False
-                logger.info(f"群聊 '{who}' 消息满足基本触发条件，但未通过总回复概率 {GROUP_CHAT_RESPONSE_PROBABILITY}%，将忽略。")
+                logger.info(f"群聊 '{who}' 消息满足基本触发条件，但未通过总回复概率 {group_cfg.get('GROUP_CHAT_RESPONSE_PROBABILITY', 100)}%，将忽略。")
         else:
             should_process_this_message = False
             logger.info(f"群聊 '{who}' 消息 (发送者: {sender}) 未满足任何基本触发条件（全局、@、关键词），将忽略。")
@@ -3299,6 +3302,38 @@ def message_consumer():
 # 启动消费线程（只需启动一次）
 consumer_thread = threading.Thread(target=message_consumer, daemon=True)
 consumer_thread.start()
+
+# === 新增：每用户群聊配置读取 ===
+USER_GROUP_CHAT_CONFIG_FILE = os.path.join(root_dir, 'user_group_chat_config.json')
+USER_GROUP_CHAT_CONFIG_LOCK = threading.Lock()
+
+def load_user_group_chat_config():
+    if not os.path.exists(USER_GROUP_CHAT_CONFIG_FILE):
+        return {}
+    with USER_GROUP_CHAT_CONFIG_LOCK:
+        try:
+            with open(USER_GROUP_CHAT_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"读取 user_group_chat_config.json 失败: {e}")
+            return {}
+
+def get_group_chat_config(who):
+    """获取指定群聊的专属群聊配置，找不到则返回全局配置。"""
+    all_config = load_user_group_chat_config()
+    # 优先用户专属
+    user_cfg = all_config.get(who)
+    # 全局配置
+    global_cfg = all_config.get("__global__", {})
+    if user_cfg and isinstance(user_cfg, dict):
+        # 如果use_global为True则用全局
+        if user_cfg.get("use_global"):
+            return global_cfg
+        # 否则合并（用户优先）
+        merged = dict(global_cfg)
+        merged.update(user_cfg)
+        return merged
+    return global_cfg
 
 def main():
     try:

@@ -2467,6 +2467,141 @@ if (switchPromptModal) {
                     }
                 });
             }
+
+            // 用户选择按钮和下拉框逻辑
+            const selectUserBtn = document.getElementById('selectUserBtn');
+            const userSelectDropdown = document.getElementById('userSelectDropdown');
+            const userGroupChatConfigContainer = document.getElementById('user-group-chat-config-container');
+
+            if (selectUserBtn && userSelectDropdown) {
+                selectUserBtn.addEventListener('click', function() {
+                    if (userSelectDropdown.style.display === 'none' || userSelectDropdown.style.display === '') {
+                        userSelectDropdown.style.display = 'inline-block';
+                    } else {
+                        userSelectDropdown.style.display = 'none';
+                    }
+                });
+
+                userSelectDropdown.addEventListener('change', async function() {
+                    const username = this.value;
+                    if (!username) {
+                        userGroupChatConfigContainer.innerHTML = '';
+                        return;
+                    }
+                    userGroupChatConfigContainer.innerHTML = '<div style="color:#888;">正在加载 ' + (username === '__global__' ? '全局配置' : username + ' 的群聊配置') + '...</div>';
+                    try {
+                        const res = await fetch(`/api/get_user_group_chat_config/${encodeURIComponent(username)}`);
+                        if (!res.ok) throw new Error('加载失败');
+                        const data = await res.json();
+                        // 构建"使用全局配置"checkbox
+                        let useGlobalCheckboxHtml = '';
+                        if (username !== '__global__') {
+                            useGlobalCheckboxHtml = `
+                                <div class="form-group">
+                                  <label><input type="checkbox" id="useGlobalConfigCheckbox" ${data.use_global ? 'checked' : ''}> 使用全局配置</label>
+                                </div>
+                            `;
+                        } else {
+                            useGlobalCheckboxHtml = `
+                                <div class="form-group">
+                                  <label><input type="checkbox" id="useGlobalConfigCheckbox" checked disabled> 使用全局配置</label>
+                                </div>
+                            `;
+                        }
+                        // 构建专属配置表单
+                        let userFormHtml = `
+                            <h3 style="margin-top:20px;">${username === '__global__' ? '全局配置' : username + ' 的群聊专属配置'}</h3>
+                            ${useGlobalCheckboxHtml}
+                            <div id="userConfigFields">
+                                <div class="form-group">
+                                    <label>群聊消息处理模式:</label>
+                                    <select name="ACCEPT_ALL_GROUP_CHAT_MESSAGES">
+                                        <option value="False" ${data.ACCEPT_ALL_GROUP_CHAT_MESSAGES === false ? 'selected' : ''}>仅接收满足条件的消息</option>
+                                        <option value="True" ${data.ACCEPT_ALL_GROUP_CHAT_MESSAGES === true ? 'selected' : ''}>接收所有群聊消息</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>被@时回复</label>
+                                    <input type="checkbox" name="ENABLE_GROUP_AT_REPLY" ${data.ENABLE_GROUP_AT_REPLY ? 'checked' : ''}>
+                                </div>
+                                <div class="form-group">
+                                    <label>关键词触发回复</label>
+                                    <input type="checkbox" name="ENABLE_GROUP_KEYWORD_REPLY" ${data.ENABLE_GROUP_KEYWORD_REPLY ? 'checked' : ''}>
+                                </div>
+                                <div class="form-group">
+                                    <label>回复触发关键词列表:</label>
+                                    <input type="text" name="GROUP_KEYWORD_LIST" value="${data.GROUP_KEYWORD_LIST || ''}">
+                                </div>
+                                <div class="form-group">
+                                    <label>群聊回复概率 (0-100):</label>
+                                    <input type="number" name="GROUP_CHAT_RESPONSE_PROBABILITY" value="${data.GROUP_CHAT_RESPONSE_PROBABILITY || 100}">
+                                </div>
+                                <div class="form-group">
+                                    <label>关键词触发时忽略回复概率</label>
+                                    <input type="checkbox" name="GROUP_KEYWORD_REPLY_IGNORE_PROBABILITY" ${data.GROUP_KEYWORD_REPLY_IGNORE_PROBABILITY ? 'checked' : ''}>
+                                </div>
+                            </div>
+                            <button type="button" class="nav-button" style="background-color:#4caf50;" onclick="saveUserGroupChatConfig('${username}')">保存${username === '__global__' ? '全局' : '该用户'}配置</button>
+                        `;
+                        userGroupChatConfigContainer.innerHTML = '';
+                        const form = document.createElement('form');
+                        form.id = 'userGroupChatConfigForm';
+                        form.innerHTML = userFormHtml;
+                        userGroupChatConfigContainer.appendChild(form);
+                        // 处理"使用全局配置"checkbox逻辑
+                        if (username !== '__global__') {
+                            const useGlobalCheckbox = document.getElementById('useGlobalConfigCheckbox');
+                            const userConfigFields = document.getElementById('userConfigFields');
+                            function toggleUserConfigFields(disabled) {
+                                userConfigFields.querySelectorAll('input,select').forEach(el => {
+                                    el.disabled = disabled;
+                                });
+                            }
+                            toggleUserConfigFields(useGlobalCheckbox.checked);
+                            useGlobalCheckbox.addEventListener('change', function() {
+                                toggleUserConfigFields(this.checked);
+                            });
+                        }
+                    } catch (e) {
+                        userGroupChatConfigContainer.innerHTML = '<div style="color:red;">加载失败，请重试</div>';
+                    }
+                });
+            }
+            // 保存用户专属群聊配置
+            window.saveUserGroupChatConfig = async function(username) {
+                
+                console.log('点击了保存', username);
+                const form = document.getElementById('userGroupChatConfigForm');
+                console.log('form:', form);
+                if (!form) return;
+                const formData = new FormData(form);
+                const payload = {};
+                for (const [k, v] of formData.entries()) {
+                    if (v === 'on') payload[k] = true;
+                    else if (v === 'off') payload[k] = false;
+                    else payload[k] = v;
+                }
+                // 处理checkbox
+                ['ENABLE_GROUP_AT_REPLY','ENABLE_GROUP_KEYWORD_REPLY','GROUP_KEYWORD_REPLY_IGNORE_PROBABILITY'].forEach(key => {
+                    payload[key] = !!form.querySelector(`[name='${key}']`)?.checked;
+                });
+                // 处理use_global
+                if (username !== '__global__') {
+                    const useGlobalCheckbox = document.getElementById('useGlobalConfigCheckbox');
+                    payload.use_global = !!useGlobalCheckbox?.checked;
+                }
+                try {
+                    const res = await fetch(`/api/save_user_group_chat_config/${encodeURIComponent(username)}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    if (!res.ok) throw new Error('保存失败');
+                    alert('保存成功！');
+                } catch (e) {
+                    alert('保存失败，请重试');
+                }
+            }
         });
     
         
@@ -3273,55 +3408,19 @@ if (switchPromptModal) {
                 </div>
 
                 <div id="section-group-chat" class="content-panel">
-                    <h2>群聊消息接收配置</h2>
+                    <!-- 新增：用户选择按钮和下拉框 -->
                     <div class="form-group">
-                        <label>群聊消息处理模式:</label>
-                        <select name="ACCEPT_ALL_GROUP_CHAT_MESSAGES" id="acceptAllGroupMessagesSelect">
-                            <option value="False" {% if config.ACCEPT_ALL_GROUP_CHAT_MESSAGES == False %}selected{% endif %}>仅接收满足条件的消息</option>
-                            <option value="True" {% if config.ACCEPT_ALL_GROUP_CHAT_MESSAGES == True %}selected{% endif %}>接收所有群聊消息</option>
+                        <button type="button" id="selectUserBtn" class="nav-button" style="background-color: #607d8b; margin-bottom: 10px;">用户选择</button>
+                        <select id="userSelectDropdown" style="display:none; margin-left: 10px; min-width: 120px;">
+                            <option value="">请选择用户</option>
+                            <option value="__global__">全局配置</option>
+                            {% for item in config.LISTEN_LIST %}
+                            <option value="{{ item[0] }}">{{ item[0] }}</option>
+                            {% endfor %}
                         </select>
                     </div>
-
-                    <div id="conditionalGroupReplyOptions">
-                        <div class="form-group" id="groupAtReplyOptionContainer">
-                            <div class="switch-item">
-                                <label>被@时回复</label>
-                                <div class="switch"><label class="switch-label"><input type="checkbox" name="ENABLE_GROUP_AT_REPLY" {% if config.ENABLE_GROUP_AT_REPLY %}checked{% endif %}><span class="slider round"></span></label></div>
-                            </div>
-                            <small>启用后，当机器人在群聊中被@时会作出回应。此选项在"接收所有群聊消息"模式下无效。</small>
-                        </div>
-
-                        <div class="form-group">
-                            <div class="switch-item">
-                                <label>关键词触发回复</label>
-                                <div class="switch"><label class="switch-label"><input type="checkbox" name="ENABLE_GROUP_KEYWORD_REPLY" {% if config.ENABLE_GROUP_KEYWORD_REPLY %}checked{% endif %}><span class="slider round"></span></label></div>
-                            </div>
-                            <small>启用后，当群聊消息包含下方设置的关键词时，机器人会作出回应。</small>
-                        </div>
-
-                        <div class="form-group">
-                            <label for="groupKeywordListInput">回复触发关键词列表:</label>
-                            <input type="text" id="groupKeywordListInput" name="GROUP_KEYWORD_LIST"
-                                   value="{{ config.GROUP_KEYWORD_LIST | join(', ') if config.GROUP_KEYWORD_LIST else '' }}"
-                                   placeholder="例如: 你好, 机器人, bot">
-                            <small>多个关键词请使用英文逗号 (,)、中文逗号 (，) 或空格分隔。机器人会根据这些关键词判断是否回应。</small>
-                        </div>
-                    </div>
-
-                    <div class="form-group">
-                        <label for="groupChatResponseProbabilityInput">群聊回复概率 (0-100):</label>
-                        <input type="number" id="groupChatResponseProbabilityInput" name="GROUP_CHAT_RESPONSE_PROBABILITY"
-                               min="0" max="100" step="1" value="{{ config.GROUP_CHAT_RESPONSE_PROBABILITY }}">
-                        <small>设置机器人在满足回复条件（被@、关键词触发或接收所有消息）时实际做出回复的概率。100表示总是回复，0表示总不回复。</small>
-                    </div>
-
-                    <div class="form-group">
-                        <div class="switch-item">
-                            <label>关键词触发时忽略回复概率</label>
-                            <div class="switch"><label class="switch-label"><input type="checkbox" name="GROUP_KEYWORD_REPLY_IGNORE_PROBABILITY" {% if config.GROUP_KEYWORD_REPLY_IGNORE_PROBABILITY %}checked{% endif %}><span class="slider round"></span></label></div>
-                        </div>
-                        <small>启用后，如果群聊消息触发了关键词回复，将无视上方设置的"群聊回复概率"，必定进行回复。此选项优先于"群聊回复概率"。</small>
-                    </div>
+                    <div id="user-group-chat-config-container"></div>
+                    <!-- 原有群聊消息处理模式UI已移除，只保留动态表单容器 -->
                 </div>
 
                 <div id="section-reply-interval" class="content-panel">
