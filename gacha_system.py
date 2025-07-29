@@ -154,7 +154,7 @@ def perform_ten_pull(user_id: str) -> str:
     _save_gacha_state(gacha_states)
 
     # Format the result string
-    result_lines = ["本次十连抽的结果为："]
+    result_lines = ["本次的结果为："]
     for card in results:
         result_lines.append(card)
 

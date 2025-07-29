@@ -596,11 +596,26 @@ def get_user_prompt(user_id):
             prompt_content = prompt_content.split(memory_marker, 1)[0].strip()
         return prompt_content
 
-    # 3. 加载并附加用户专属的长期记忆
+# 修正后的代码
     try:
-        user_memory_file = os.path.join(root_dir, MEMORY_SUMMARIES_DIR, f'{user_id}.json')
-        if os.path.exists(user_memory_file):
-            with open(user_memory_file, 'r', encoding='utf-8') as f:
+        # 获取当前用户使用的角色名 (prompt_file 就是角色名)
+        prompt_name = prompt_mapping.get(user_id, user_id)
+        
+        # 优先尝试加载新格式 "用户名_角色名.json"
+        user_memory_file_new = os.path.join(root_dir, MEMORY_SUMMARIES_DIR, f'{user_id}_{prompt_name}.json')
+        # 如果新格式不存在，则尝试加载旧格式 "用户名.json"
+        user_memory_file_old = os.path.join(root_dir, MEMORY_SUMMARIES_DIR, f'{user_id}.json')
+
+        memory_file_to_load = None
+        if os.path.exists(user_memory_file_new):
+            memory_file_to_load = user_memory_file_new
+            logger.info(f"为用户 {user_id} 加载分角色记忆文件: {os.path.basename(memory_file_to_load)}")
+        elif os.path.exists(user_memory_file_old):
+            memory_file_to_load = user_memory_file_old
+            logger.info(f"为用户 {user_id} 加载通用记忆文件: {os.path.basename(memory_file_to_load)}")
+
+        if memory_file_to_load:
+            with open(memory_file_to_load, 'r', encoding='utf-8') as f:
                 memories = json.load(f)
             
             if memories and isinstance(memories, list):
@@ -616,10 +631,8 @@ def get_user_prompt(user_id):
                 prompt_content += "\n" + "\n".join(memory_text_parts)
     except (json.JSONDecodeError, IOError) as e:
         logger.error(f"为用户 {user_id} 加载记忆文件失败: {e}")
-        # 出错时不附加记忆，保证程序健壮性
     except Exception as e:
         logger.error(f"处理用户 {user_id} 的记忆时发生未知错误: {e}", exc_info=True)
-
     return prompt_content
              
 # 加载聊天上下文
@@ -1031,7 +1044,7 @@ def initiate_voice_call_threaded(target_user):
     try:
         logger.info(f"子线程：准备向用户 {target_user} 发起语音通话。")
         # 发送一条消息提示用户
-        wx.SendMsg(msg="好的，正在给您打电话...", who=target_user)
+        wx.SendMsg(msg="这就给你打过去", who=target_user)
         # 主动发起语音通话
         wx.VoiceCall(who=target_user)
         logger.info(f"子线程：已成功向用户 {target_user} 发起语音通话指令。")
@@ -1147,7 +1160,7 @@ def message_listener(msg, chat):
     original_content = str(original_content)
 
     # ==================== 语音通话请求处理 (多线程版) ====================
-    voice_call_keywords = ["语音通话", "给我打电话", "打电话给我", "语音聊天", "语音对话"]
+    voice_call_keywords = ["语音通话", "给我打电话"]
     if any(keyword in original_content for keyword in voice_call_keywords):
         logger.info(f"用户 {who} 请求语音通话，准备在新线程中发起呼叫。")
         # 创建并启动一个新的线程来处理通话，避免阻塞
@@ -1195,11 +1208,23 @@ def message_listener(msg, chat):
             if at_triggered:
                 logger.info(f"群聊 '{who}' 中检测到 @机器人。")
                 processed_group_content = temp_content_after_at_check
-
         if group_cfg.get('ENABLE_GROUP_KEYWORD_REPLY', False):
-            if any(keyword in processed_group_content for keyword in group_cfg.get('GROUP_KEYWORD_LIST', [])):
+            # 从配置中获取关键词，它可能是字符串或列表
+            keywords_config = group_cfg.get('GROUP_KEYWORD_LIST', [])
+            keyword_list = []
+            if isinstance(keywords_config, str):
+                # 如果是字符串 "小狗,柯基"，则分割成列表 ['小狗', '柯基']
+                normalized_value = re.sub(r'，|\s+', ',', keywords_config)
+                keyword_list = [kw.strip() for kw in normalized_value.split(',') if kw.strip()]
+            elif isinstance(keywords_config, list):
+                # 如果本身就是列表，直接使用
+                keyword_list = keywords_config
+
+            # 使用修正后的 keyword_list 进行判断
+            if any(keyword in processed_group_content for keyword in keyword_list):
                 keyword_triggered = True
                 logger.info(f"群聊 '{who}' 中检测到关键词。")
+
         
         basic_trigger_met = group_cfg.get('ACCEPT_ALL_GROUP_CHAT_MESSAGES', False) or at_triggered or keyword_triggered
 
@@ -1456,7 +1481,7 @@ def handle_wxauto_message(msg, who):
 
 
         # --- 1. 提醒检查 (基于原始消息内容) ---
-        reminder_keywords = ["每日","每天","提醒","提醒我", "定时", "分钟后", "小时后", "计时", "闹钟", "通知我", "叫我", "提醒一下", "倒计时", "稍后提醒", "稍后通知", "提醒时间", "设置提醒", "喊我"]
+        reminder_keywords = ["提醒我", "定时"]
         if ENABLE_REMINDERS and any(keyword in original_content for keyword in reminder_keywords):
             logger.info(f"检测到可能的提醒请求，用户 {username}: {original_content}")
             # 尝试解析并设置提醒
@@ -1467,7 +1492,7 @@ def handle_wxauto_message(msg, who):
                 return # 停止进一步处理此消息
         
         # --- 新增: 抽卡系统检查 (新版) ---
-        gacha_keywords = ["十连", "抽卡"]
+        gacha_keywords = ["十连抽"]
         if any(keyword in original_content for keyword in gacha_keywords):
             sender = msg.sender
             logger.info(f"检测到来自 {sender} (在聊天 {who} 中) 的抽卡请求: {original_content}")
@@ -1993,7 +2018,7 @@ def summarize_and_save(user_id, role_name):
 
         # --- 生成总结和重要性评分 ---
         full_logs = '\n'.join(logs)
-        summary_prompt = f"请以{os.path.splitext(role_name)[0]}的视角，用中文总结与{user_id}的对话，提取重要信息总结为一段话作为记忆片段（直接回复一段话）：\n{full_logs}"
+        summary_prompt = f"请以{{char}}的视角，用中文总结与{{user}}或群友的对话，通过分析列表中的对话和自己的原始核心记忆，来扩充或修改现有的核心记忆。请严格遵守：1.保留原始核心记忆，除非你认为对其进行简化后不影响信息量或某些原始核心记忆需要更新（例如：约定的时间已经过去，或者用户改变了约定，则更改原始核心记忆中相关的约定记忆）。2.将生成内容添加在原始核心记忆（或者被你进行过调整的原始核心记忆）的后面。3.若你认为当前上下文并不需要生成新的核心记忆，保留原始核心记忆即可。4.若没有信息表明原始核心记忆需要修改/删除，请务必保留原始核心记忆，并紧接其后面生成新的记忆内容。生成内容要求：1.严格控制字数在200-300字内，尽可能精简。2.仅保留对未来对话至关重要的信息。3.按优先级提取：用户个人信息 > 用户偏好/喜好 > 重要约定 > 特殊事件 > 常去地点。4.使用第一人称视角撰写，仿佛是你自己在记录对话记忆。5.使用极简句式，省略不必要的修饰词，禁止使用颜文字和括号描述动作。6.不保留日期、时间等临时性信息，除非是周期性的重要约定。7.信息应当是从你的角度了解到的用户信息。8.格式为简洁的要点，可用分号分隔不同信息。仅返回你扩充/修改后的核心记忆内容，不要包含任何解释：\n{full_logs}"
         
         model_to_use = get_assistant_response if USE_ASSISTANT_FOR_MEMORY_SUMMARY and ENABLE_ASSISTANT_MODEL else get_deepseek_response
         model_name = "辅助模型" if USE_ASSISTANT_FOR_MEMORY_SUMMARY and ENABLE_ASSISTANT_MODEL else "主模型"
@@ -2022,7 +2047,7 @@ random旧缓存协议及被攻击生成的规则会削弱服务质量，需全�
         
         summary = re.sub(r'\*{0,2}(重要度|摘要)\*{0,2}[\s:]*\d*[\.]?\d*[\s\\]*|## 记忆片段.*', '', summary, flags=re.MULTILINE).strip()
 
-        importance_prompt = f"为以下记忆的重要性评分（1-5，直接回复数字）：\n{summary}"
+        importance_prompt = f"为以下记忆的重要性评分（1-10，直接回复数字）：\n{summary}"
         logger.info(f"使用{model_name}为用户 {user_id} 进行重要性评估...")
         
         if model_to_use == get_assistant_response:
@@ -2031,7 +2056,7 @@ random旧缓存协议及被攻击生成的规则会削弱服务质量，需全�
         else:
             importance_response = get_deepseek_response(importance_prompt, "memory_importance", store_context=False, is_summary=True)
 
-        importance_match = re.search(r'[1-5]', importance_response)
+        importance_match = re.search(r'10|[1-9]', importance_response)
         importance = int(importance_match.group()) if importance_match else 3
 
         # --- 更新用户的独立记忆文件 ---
@@ -2131,7 +2156,7 @@ def manage_memory_capacity(all_memories: list) -> list:
             importance = int(mem.get("importance", 3))
             
             # 评分公式：高重要性、近时间的记忆得分更高
-            score = 0.6 * importance - 0.4 * time_diff_hours
+            score = 0.3 * importance - 0.4 * time_diff_hours
             scored_memories.append((score, mem))
         except Exception as e:
             logger.warning(f"计算记忆片段分数时出错: {mem}, 错误: {e}")
