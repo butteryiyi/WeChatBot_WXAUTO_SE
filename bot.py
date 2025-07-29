@@ -19,7 +19,7 @@ import datetime as dt
 import threading
 import time
 from wxautox_wechatbot import WeChat
-from openai import OpenAI
+from openai import OpenAI, APITimeoutError
 import random
 from typing import Optional
 import pyautogui
@@ -799,7 +799,7 @@ def strip_before_thought_tags(text):
 
 def call_chat_api_with_retry(messages_to_send, user_id, max_retries=2, is_summary=False):
     """
-    调用 Chat API 并在第一次失败或返回空结果时重试。
+    调用 Chat API 并在第一次失败或返回空结果时重试，包含200秒全局超时。
 
     参数:
         messages_to_send (list): 要发送给 API 的消息列表。
@@ -808,9 +808,27 @@ def call_chat_api_with_retry(messages_to_send, user_id, max_retries=2, is_summar
 
     返回:
         str: API 返回的文本回复。
+    
+    异常:
+        TimeoutError: 如果总处理时间超过200秒。
     """
     attempt = 0
+    
+    # --- 全局超时控制 ---
+    TOTAL_TIMEOUT = 240  # 秒
+    start_time = time.time()
+
     while attempt <= max_retries:
+        # --- 检查总时间是否已超时 ---
+        elapsed_time = time.time() - start_time
+        if elapsed_time >= TOTAL_TIMEOUT:
+            logger.error(f"API调用总时间超过 {TOTAL_TIMEOUT} 秒，已超时。用户: {user_id}")
+            # 抛出标准的TimeoutError，以便上层捕获
+            raise TimeoutError(f"API call timed out after {TOTAL_TIMEOUT} seconds.")
+        
+        # 计算本次请求的剩余超时时间
+        request_timeout = TOTAL_TIMEOUT - elapsed_time
+
         try:
             logger.debug(f"发送给 API 的消息 (ID: {user_id}): {messages_to_send}")
 
@@ -819,7 +837,8 @@ def call_chat_api_with_retry(messages_to_send, user_id, max_retries=2, is_summar
                 messages=messages_to_send,
                 temperature=TEMPERATURE,
                 max_tokens=MAX_TOKEN,
-                stream=False
+                stream=False,
+                timeout=request_timeout  # 将计算出的超时时间传递给API调用
             )
 
             if response.choices:
@@ -831,12 +850,15 @@ def call_chat_api_with_retry(messages_to_send, user_id, max_retries=2, is_summar
                         if filtered_content:
                             return filtered_content
 
-
-            # 记录错误日志
             logger.error(f"错误请求消息体: {MODEL}")
             logger.error(json.dumps(messages_to_send, ensure_ascii=False, indent=2))
             logger.error(f"\033[31m错误：API 返回了空的选择项或内容为空。模型名:{MODEL}\033[0m")
             logger.error(f"完整响应对象: {response}")
+
+        except APITimeoutError:
+            # 捕获单次请求超时，并记录日志。外层循环会控制总时间。
+            logger.warning(f"单次 API 请求超时 (总已用时: {elapsed_time:.1f}s)。正在准备下一次尝试...")
+            # 这里不需要做任何特殊操作，外层循环会继续或因总时间超时而终止
 
         except Exception as e:
             logger.error(f"错误请求消息体: {MODEL}")
@@ -844,18 +866,17 @@ def call_chat_api_with_retry(messages_to_send, user_id, max_retries=2, is_summar
             error_info = str(e)
             logger.error(f"自动重试：第 {attempt + 1} 次调用 {MODEL}失败 (ID: {user_id}) 原因: {error_info}", exc_info=False)
 
-            # 细化错误分类
             if "real name verification" in error_info:
                 logger.error("\033[31m错误：API 服务商反馈请完成实名认证后再使用！\033[0m")
-                break  # 终止循环，不再重试
+                break
             elif "rate limit" in error_info:
                 logger.error("\033[31m错误：API 服务商反馈当前访问 API 服务频次达到上限，请稍后再试！\033[0m")
             elif "payment required" in error_info:
                 logger.error("\033[31m错误：API 服务商反馈您正在使用付费模型，请先充值再使用或使用免费额度模型！\033[0m")
-                break  # 终止循环，不再重试
+                break
             elif "user quota" in error_info or "is not enough" in error_info or "UnlimitedQuota" in error_info:
                 logger.error("\033[31m错误：API 服务商反馈，你的余额不足，请先充值再使用! 如有余额，请检查令牌是否为无限额度。\033[0m")
-                break  # 终止循环，不再重试
+                break
             elif "Api key is invalid" in error_info:
                 logger.error("\033[31m错误：API 服务商反馈 API KEY 不可用，请检查配置选项！\033[0m")
             elif "service unavailable" in error_info:
@@ -866,14 +887,15 @@ def call_chat_api_with_retry(messages_to_send, user_id, max_retries=2, is_summar
                     logger.warning(f"已开启敏感词自动清除上下文功能，开始清除用户 {user_id} 的聊天上下文")
                     clear_chat_context(user_id)
                     if is_summary:
-                        clear_memory_temp_files(user_id)  # 如果是总结任务，清除临时文件
-                break  # 终止循环，不再重试
+                        clear_memory_temp_files(user_id)
+                break
             else:
                 logger.error("\033[31m未知错误：" + error_info + "\033[0m")
 
         attempt += 1
 
     raise RuntimeError("抱歉，我现在有点忙，稍后再聊吧。")
+
 
 def get_assistant_response(message, user_id, is_summary=False, system_prompt=None):
     """
@@ -1712,6 +1734,14 @@ def process_user_messages(user_id):
                 logger.info(f"回复包含记忆片段标记，已屏蔽发送给用户 {user_id}。")
         else:
             logger.error(f"未能为用户 {user_id} 生成任何回复。")
+    # --- 新增的超时捕获块 ---
+    except TimeoutError:
+        # 捕获由 call_chat_api_with_retry 抛出的超时错误
+        logger.error(f"处理用户 {user_id} 消息时因API响应超时（超过200秒），发送备用消息。")
+        fallback_message = "抱歉，我现在真的很忙，稍后再聊吧。"
+        # 使用 send_reply 发送备用消息
+        send_reply(user_id, sender_name, username, "[API响应超时]", fallback_message)
+    # --- 新增结束 ---
             
     except Exception as e:
         if is_auto_message:
@@ -1722,7 +1752,6 @@ def process_user_messages(user_id):
             # 如果是正常用户消息出错，记录日志并重新抛出异常（保持原有的错误处理逻辑）
             logger.error(f"用户消息处理失败 (用户: {user_id}): {str(e)}")
             raise
-
 
 
 # (这是全新的 send_reply 函数，请用它替换原来的)
