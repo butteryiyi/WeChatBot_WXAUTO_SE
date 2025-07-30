@@ -1480,25 +1480,67 @@ def api_get_chat_context_users():
 @app.route('/clear_chat_context/<username>', methods=['POST'])
 @login_required
 def clear_chat_context(username):
-    """清除指定用户的聊天上下文"""
+    """清除指定用户与其当前活动Prompt关联的聊天上下文"""
     if not os.path.exists(CHAT_CONTEXTS_FILE):
         return jsonify({'status': 'error', 'message': '聊天上下文文件不存在'}), 404
 
+    # 1. 获取用户当前的人设 (prompt)
+    try:
+        config = parse_config()
+        listen_list = config.get('LISTEN_LIST', [])
+        current_prompt = next((item[1] for item in listen_list if item[0] == username), None)
+        
+        if not current_prompt:
+            return jsonify({'error': f"在配置中未找到用户 '{username}' 的活动Prompt，无法清除上下文"}), 404
+
+    except Exception as e:
+        app.logger.error(f"解析配置文件以查找用户Prompt时出错: {e}")
+        return jsonify({'error': '解析配置文件失败'}), 500
+
+    # 2. 使用文件锁安全地修改文件
     with FileLock(CHAT_CONTEXTS_LOCK_FILE):
         try:
             with open(CHAT_CONTEXTS_FILE, 'r+', encoding='utf-8') as f:
-                data = json.load(f)
-                if username in data:
-                    del data[username]
-                    f.seek(0) # 回到文件开头
+                content = f.read()
+                if not content:
+                    # 文件为空，无需操作
+                    return jsonify({'status': 'success', 'message': f"用户 '{username}' 的聊天上下文已为空"})
+
+                data = json.loads(content)
+                user_data = data.get(username)
+
+                if user_data and isinstance(user_data, dict) and current_prompt in user_data:
+                    # 3. 在用户的上下文中，只删除与当前人设关联的条目
+                    del user_data[current_prompt]
+                    app.logger.info(f"已清除用户 '{username}' 的人设 '{current_prompt}' 的聊天上下文。")
+                    
+                    # 4. (推荐) 如果删除后该用户没有任何人设数据了，则删除该用户键
+                    if not user_data:
+                        del data[username]
+                        app.logger.info(f"用户 '{username}' 已无任何上下文数据，已将其从文件中移除。")
+                    
+                    # 5. 写回修改后的数据
+                    f.seek(0)
                     json.dump(data, f, ensure_ascii=False, indent=4)
-                    f.truncate() # 删除剩余内容
-                    return jsonify({'status': 'success', 'message': f"用户 '{username}' 的聊天上下文已清除"})
+                    f.truncate()
+                    return jsonify({'status': 'success', 'message': f"用户 '{username}' 的人设 '{current_prompt}' 的聊天上下文已清除"})
+                elif not user_data:
+                    return jsonify({'status': 'success', 'message': f"用户 '{username}' 的聊天上下文已为空"})
                 else:
-                    return jsonify({'status': 'error', 'message': f"用户 '{username}' 未找到"}), 404
+                    # 兼容旧的数据格式 (直接是列表) 或者人设未找到的情况
+                    # 如果是旧格式，则直接删除整个用户条目，因为无法区分人设
+                    if isinstance(user_data, list):
+                         del data[username]
+                         f.seek(0)
+                         json.dump(data, f, ensure_ascii=False, indent=4)
+                         f.truncate()
+                         return jsonify({'status': 'success', 'message': f"用户 '{username}' 的旧格式上下文已清除"})
+                    return jsonify({'status': 'error', 'message': f"用户 '{username}' 未找到与人设 '{current_prompt}' 关联的上下文"}), 404
+
         except (json.JSONDecodeError, IOError) as e:
             app.logger.error(f"处理 chat_contexts.json 失败: {e}")
             return jsonify({'status': 'error', 'message': '处理聊天上下文文件失败'}), 500
+
 
 def get_default_config():
     return {
@@ -1870,33 +1912,42 @@ def save_user_memory_summary(username):
 @app.route('/api/delete_memory_summary/<username>', methods=['POST'])
 @login_required
 def delete_user_memory_summary(username):
-    """删除指定用户的所有核心记忆文件"""
+    """删除指定用户与其当前活动Prompt关联的核心记忆文件"""
     if not os.path.exists(MEMORY_SUMMARIES_DIR):
         return jsonify({'status': 'success', 'message': '记忆目录不存在，无需操作'})
 
-    safe_username_prefix = safe_filename(username) + '_'
-    deleted_count = 0
-    errors = []
+    # 1. 获取用户当前正在使用的人设 (prompt)
+    try:
+        config = parse_config()
+        listen_list = config.get('LISTEN_LIST', [])
+        current_prompt_name = next((item[1] for item in listen_list if item[0] == username), None)
+        
+        if not current_prompt_name:
+             return jsonify({'error': f"在配置中未找到用户 '{username}' 的活动Prompt，无法清除核心记忆"}), 404
+    except Exception as e:
+        app.logger.error(f"解析配置文件以查找用户Prompt时出错: {e}")
+        return jsonify({'error': '解析配置文件失败'}), 500
 
-    for filename in os.listdir(MEMORY_SUMMARIES_DIR):
-        if filename.startswith(safe_username_prefix) and filename.endswith('.json'):
-            file_path = os.path.join(MEMORY_SUMMARIES_DIR, filename)
-            lock_path = file_path + '.lock'
-            try:
-                with FileLock(lock_path, timeout=1):
-                     os.remove(file_path)
-                     deleted_count += 1
-            except Exception as e:
-                app.logger.error(f"删除记忆文件 {filename} 失败: {e}")
-                errors.append(filename)
+    # 2. 根据用户名和人设名，构建精确的目标文件名
+    safe_user_filename_part = safe_filename(username)
+    safe_prompt_filename_part = safe_filename(current_prompt_name)
+    target_filename = f"{safe_user_filename_part}_{safe_prompt_filename_part}.json"
+    file_path = os.path.join(MEMORY_SUMMARIES_DIR, target_filename)
+    lock_path = file_path + '.lock'
 
-    if errors:
-        return jsonify({'status': 'error', 'message': f'部分文件删除失败: {", ".join(errors)}'}), 500
-    
-    if deleted_count > 0:
-        return jsonify({'status': 'success', 'message': f"用户 '{username}' 的 {deleted_count} 个核心记忆文件已清除"})
+    # 3. 检查并删除这一个特定的文件
+    if os.path.exists(file_path):
+        try:
+            with FileLock(lock_path, timeout=1):
+                 os.remove(file_path)
+            app.logger.info(f"已删除核心记忆文件: {target_filename}")
+            return jsonify({'status': 'success', 'message': f"用户 '{username}' 的人设 '{current_prompt_name}' 的核心记忆已清除"})
+        except Exception as e:
+            app.logger.error(f"删除核心记忆文件 {target_filename} 失败: {e}")
+            return jsonify({'status': 'error', 'message': f'删除文件失败: {e}'}), 500
     else:
-        return jsonify({'status': 'success', 'message': f"未找到用户 '{username}' 的核心记忆文件"})
+        return jsonify({'status': 'success', 'message': f"未找到用户 '{username}' 的人设 '{current_prompt_name}' 的核心记忆文件"})
+
 
 # =========================================================================
 # ===== 新增代码结束 =====
