@@ -1077,12 +1077,50 @@ def initiate_voice_call_threaded(target_user):
 
 def message_listener(msg, chat):
     global can_send_messages
-    who = chat.who 
-    msgtype = msg.type
-    original_content = msg.content
+    # --- START: 新增代码：处理消息撤回事件 ---
+    who = chat.who
     sender = msg.sender
+    original_content = msg.content
+    
+    # 检查是否是系统发出的、关于消息撤回的提示
+    # 根据日志，这类消息的发送者(sender)是'system'
+    if sender == 'system' and '撤回了一条消息' in original_content:
+        # 判断是否为私聊。在私聊中，'who'就是对方的昵称。
+        # 此功能目前仅针对私聊，避免在群聊中对所有人的撤回都做出反应。
+        is_group_chat = is_user_group_chat(who)
+        if not is_group_chat:
+            logger.info(f"检测到用户 '{who}' 撤回了一条消息。")
+            
+            # 构建一个特殊的内部指令，用于触发AI进行特定回复
+            recall_trigger_content = "[用户操作: 撤回了一条消息]"
+            
+            # 将这个特殊指令像普通消息一样放入处理队列
+            with queue_lock:
+                current_time_str = datetime.now().strftime("%Y-%m-%d %A %H:%M:%S")
+                content_with_time = f"[{current_time_str}] {recall_trigger_content}"
+                if who not in user_queues:
+                    user_queues[who] = {
+                        'messages': [content_with_time],
+                        'sender_name': who,
+                        'username': who,
+                        'last_message_time': time.time()
+                    }
+                else:
+                    user_queues[who]['messages'].append(content_with_time)
+                    user_queues[who]['last_message_time'] = time.time()
+                
+                logger.info(f"已为用户 '{who}' 加入撤回消息触发指令到队列。")
+            return  # 处理完毕，结束本次函数执行，避免后续代码处理这条系统消息
+    # --- END: 新增代码 ---
+        # --- END: 新增代码 ---
+    
+    # a.k.a 原函数的其他部分从这里开始
+    # who = chat.who # 这行可以删掉，因为上面已经定义了
+    msgtype = msg.type
+    # original_content = msg.content # 这行也可以删掉
+    # sender = msg.sender # 这行也可以删掉
     msgattr = msg.attr
-    logger.info(f'收到来自聊天窗口 "{who}" 中用户 "{sender}" 的原始消息 (类型: {msgtype}, 属性: {msgattr}): {str(original_content)[:100]}')
+    logger.info(f'收到来自聊天窗口 "{who}" 中用户 "{sender}" 的原始消息 (类型: {msgtype}, 属性: {msgattr}): {original_content[:100]}')
 
     if msgattr != 'friend': 
         logger.info(f"非好友消息，已忽略。")
