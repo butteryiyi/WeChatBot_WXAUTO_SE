@@ -399,7 +399,8 @@ def submit_config():
             'ENABLE_ONLINE_API', 'SEPARATE_ROW_SYMBOLS','ENABLE_SCHEDULED_RESTART',
             'ENABLE_GROUP_AT_REPLY', 'ENABLE_GROUP_KEYWORD_REPLY','GROUP_KEYWORD_REPLY_IGNORE_PROBABILITY', 'REMOVE_PARENTHESES',
             'ENABLE_ASSISTANT_MODEL', 'USE_ASSISTANT_FOR_MEMORY_SUMMARY',
-            'IGNORE_GROUP_CHAT_FOR_AUTO_MESSAGE', 'ENABLE_SENSITIVE_CONTENT_CLEARING'
+            'IGNORE_GROUP_CHAT_FOR_AUTO_MESSAGE', 'ENABLE_SENSITIVE_CONTENT_CLEARING',
+            'ENABLE_GROUP_AT_REPLY_IN_REPLIES'
         ]
         for field in boolean_fields:
             new_values_for_config_py[field] = field in request.form
@@ -938,7 +939,8 @@ def index():
                 'ENABLE_ONLINE_API', 'SEPARATE_ROW_SYMBOLS','ENABLE_SCHEDULED_RESTART',
                 'ENABLE_GROUP_AT_REPLY', 'ENABLE_GROUP_KEYWORD_REPLY','GROUP_KEYWORD_REPLY_IGNORE_PROBABILITY','REMOVE_PARENTHESES',
                 'ENABLE_ASSISTANT_MODEL', 'USE_ASSISTANT_FOR_MEMORY_SUMMARY',
-                'IGNORE_GROUP_CHAT_FOR_AUTO_MESSAGE', 'ENABLE_SENSITIVE_CONTENT_CLEARING'
+                'IGNORE_GROUP_CHAT_FOR_AUTO_MESSAGE', 'ENABLE_SENSITIVE_CONTENT_CLEARING',
+                'ENABLE_GROUP_AT_REPLY_IN_REPLIES'
             ]
             for field in boolean_fields_from_editor:
                  # 确保这些字段在表单中存在才处理，否则它们可能来自 quick_start
@@ -1612,7 +1614,8 @@ def get_default_config():
         "ASSISTANT_MAX_TOKEN": 1000,
         "USE_ASSISTANT_FOR_MEMORY_SUMMARY": False,
         "IGNORE_GROUP_CHAT_FOR_AUTO_MESSAGE": False,
-        "ENABLE_SENSITIVE_CONTENT_CLEARING": True
+        "ENABLE_SENSITIVE_CONTENT_CLEARING": True,
+        "ENABLE_GROUP_AT_REPLY_IN_REPLIES": True
     }
 
 def validate_config():
@@ -1971,28 +1974,37 @@ def save_user_group_chat_config(data):
         with open(USER_GROUP_CHAT_CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
+# 在 config_editor.py 中找到此函数并替换
 @app.route('/api/get_user_group_chat_config/<username>', methods=['GET'])
 @login_required
 def get_user_group_chat_config(username):
     all_config = load_user_group_chat_config()
     user_config = all_config.get(username)
     if not user_config:
+        # 添加新的默认值
         user_config = {
             "use_global": False,
             "ACCEPT_ALL_GROUP_CHAT_MESSAGES": False,
             "ENABLE_GROUP_AT_REPLY": True,
+            "ENABLE_GROUP_AT_REPLY_IN_REPLIES": True, # <-- 新增默认值
             "ENABLE_GROUP_KEYWORD_REPLY": False,
             "GROUP_KEYWORD_LIST": "",
             "GROUP_CHAT_RESPONSE_PROBABILITY": 100,
             "GROUP_KEYWORD_REPLY_IGNORE_PROBABILITY": False
         }
+    # 确保新字段存在
+    if "ENABLE_GROUP_AT_REPLY_IN_REPLIES" not in user_config:
+        user_config["ENABLE_GROUP_AT_REPLY_IN_REPLIES"] = True # 为旧配置补充默认值
+
     # 全局配置不需要 use_global 字段
     if username == "__global__":
         user_config.pop("use_global", None)
     else:
         if "use_global" not in user_config:
             user_config["use_global"] = False
+            
     return jsonify(user_config)
+
 
 
 @app.route('/api/save_user_group_chat_config/<username>', methods=['POST'])
@@ -2015,6 +2027,7 @@ def save_user_group_chat_config_api(username):
     type_map = {
         "ACCEPT_ALL_GROUP_CHAT_MESSAGES": bool,
         "ENABLE_GROUP_AT_REPLY": bool,
+        "ENABLE_GROUP_AT_REPLY_IN_REPLIES": bool,  # <--- [新增这一行]
         "ENABLE_GROUP_KEYWORD_REPLY": bool,
         "GROUP_KEYWORD_REPLY_IGNORE_PROBABILITY": bool,
         "use_global": bool,

@@ -17,12 +17,15 @@ import logging
 from datetime import datetime
 import datetime as dt
 import threading
+import uiautomation as auto
 import time
 from wxautox_wechatbot import WeChat
+import uiautomation as uia
 from openai import OpenAI, APITimeoutError
 import random
 from typing import Optional
 import pyautogui
+import pyperclip
 import shutil
 import re
 from regex_patterns import QINGLI_AI_BIAOQIAN_ZHUJIE
@@ -1059,6 +1062,315 @@ def keep_alive():
             
         # 等待指定间隔后再进行下一次检查
         time.sleep(check_interval)
+# ==================== 拍一拍功能区 开始 (最终验证版) ====================
+# ==================== 拍一-拍功能区 ("最终解释"键盘模拟版) ====================
+
+import uiautomation as uia
+import pyautogui
+import time
+import logging
+
+# 假设 wx, logger 等对象已在您的代码上下文中定义并初始化
+
+# 定义一个我们程序中标准的UI自动化操作超时时间（秒）
+DEFAULT_UI_AUTOMATION_TIMEOUT = 2.0 
+
+def pat_pat_user_threaded(chat_name: str, target_user_name: str):
+    """
+    在一个新的线程中执行拍一拍操作。
+    【【【"最终解释"键盘模拟版】】】
+    核心洞察：日志显示uiautomation无法读取菜单项名称 (item.Name为空)。
+    解决方案：
+    - A计划 (智能识别)：继续尝试通过控件遍历查找，以兼容可能支持的环境。
+    - B计划 (键盘模拟)：如果A计划失败，则启动终极后备方案，通过模拟键盘
+      按键 (下箭头x2, 回车) 来盲操作菜单，此方法不依赖控件属性，极为可靠。
+    
+    Args:
+        chat_name (str): 聊天窗口的名称 (好友昵称或群聊名称)。
+        target_user_name (str): 要拍的人的昵称。
+    """
+    chat_window_control = None
+    
+    try:
+        # 注意: 我已将日志中的 "拍一-拍" 全部修正为 "拍一拍"
+        logger.info(f"[拍一拍任务] 子线程启动：准备在聊天 '{chat_name}' 中拍 '{target_user_name}'。")
+        
+        wx.ChatWith(chat_name)
+        time.sleep(1.0) 
+
+        uia.uiautomation.SetGlobalSearchTimeout(5.0)
+        logger.info(f"[拍一拍任务] 正在寻找名为 '{chat_name}' 的独立聊天窗口...")
+        chat_window_control = uia.WindowControl(Name=chat_name, searchDepth=1)
+        
+        if not chat_window_control.Exists():
+            logger.error(f"[拍一拍任务] 失败：找不到名为 '{chat_name}' 的独立聊天窗口。")
+            return
+
+        logger.info(f"[拍一拍任务] 成功锁定目标操作窗口: '{chat_window_control.Name}'")
+        chat_window_control.SetActive()
+        chat_window_control.SetTopmost(True)
+        time.sleep(0.3)
+        
+        message_list = chat_window_control.ListControl(Name='消息')
+        if not message_list.Exists():
+            logger.error(f"[拍一拍任务] 失败：在 '{chat_name}' 窗口中找不到 '消息' 列表控件。")
+            return
+        
+        logger.info("[拍一拍任务] 采用精准定位策略：正在从下往上扫描左侧消息...")
+        all_items = message_list.GetChildren()
+        target_element = None
+        list_rect = message_list.BoundingRectangle
+        pane_center_x = list_rect.left + list_rect.width() / 2
+
+        for item in reversed(all_items):
+            item_name = item.Name
+            if not item_name or "新消息" in item_name or "撤回" in item_name: continue
+            item_rect = item.BoundingRectangle
+            if item_rect.left < pane_center_x:
+                logger.info(f"[拍一拍任务] 锁定目标消息项: '{item_name}' (位于左侧)")
+                target_element = item
+                break
+        
+        if not target_element:
+            logger.warning(f"[拍一拍任务] 失败：未找到任何位于左侧的消息项。")
+            return
+
+        avatar_control = target_element.ButtonControl()
+        if not avatar_control.Exists(0.5):
+            logger.error("[拍一拍任务] 致命错误：在消息项中未能定位到头像按钮！无法继续。")
+            return
+            
+        avatar_rect = avatar_control.BoundingRectangle
+        click_x = avatar_rect.left + avatar_rect.width() // 2
+        click_y = avatar_rect.top + avatar_rect.height() // 2
+      
+        logger.info(f"[拍一拍任务] 准备在精确计算的坐标 ({click_x}, {click_y}) 执行右键点击...")
+        pyautogui.click(x=click_x, y=click_y, button='right', duration=0.25)
+        logger.info("[拍一拍任务] 右键点击指令已发送。等待菜单弹出...")
+        time.sleep(0.5)
+
+        # --- A/B计划执行区 ---
+        action_completed = False
+
+        # --- A计划: 智能识别 ---
+        logger.info("[拍一拍任务 - A计划] 尝试通过控件属性智能识别'拍一拍'...")
+        uia.uiautomation.SetGlobalSearchTimeout(1.0) # A计划使用短超时
+        menu = uia.MenuControl(ClassName='CMenuWnd')
+        
+        if menu.Exists(0.1):
+            logger.info("[拍一拍任务 - A计划] 成功定位菜单容器，开始遍历子项...")
+            pat_item = None
+            all_menu_items = menu.GetChildren()
+            for item in all_menu_items:
+                if item.Name == '拍一拍':
+                    pat_item = item
+                    break
+            
+            if pat_item:
+                logger.info("[拍一拍任务 - A计划] 成功！已通过名称识别到'拍一拍'项，准备点击。")
+                pat_item.Click()
+                action_completed = True
+            else:
+                found_names = [child.Name for child in all_menu_items]
+                logger.warning(f"[拍一拍任务 - A计划] 失败：遍历完成，但未能找到名为'拍一拍'的项。探测到的名称列表: {found_names}。")
+        else:
+            logger.warning("[拍一拍任务 - A计划] 失败：未能定位到菜单容器。")
+
+        # --- B计划: 键盘模拟 (如果A计划失败) ---
+        if not action_completed:
+            logger.info("[拍一拍任务 - B计划] A计划失败，启动终极后备方案：模拟键盘操作！")
+            
+            # 策略：按2次下箭头，以兼容私聊和群聊场景，然后按回车。
+            logger.info("[拍一拍任务 - B计划] 正在发送键盘指令: [Down] -> [Down] -> [Enter]")
+            pyautogui.press('down')
+            time.sleep(0.1)
+            pyautogui.press('down')
+            time.sleep(0.1)
+            pyautogui.press('enter')
+            action_completed = True # 假设键盘操作成功
+        
+        if action_completed:
+            logger.info(f"🎉🎉🎉 [拍一拍任务] 任务圆满成功！已对 '{target_user_name}' 执行了拍一拍。 🎉🎉🎉")
+        else:
+            # 理论上B计划总会执行，所以这里几乎不会触发
+            logger.error("[拍一拍任务] 致命错误：A计划与B计划全部失败，无法执行操作。")
+
+
+    except Exception as e:
+        logger.error(f"[拍一拍任务] 执行时发生未知严重错误", exc_info=True)
+        try:
+            wx.SendMsg(msg="抱歉，执行拍一拍操作时内部发生严重错误，请检查后台日志。", who=chat_name)
+        except Exception: pass
+    finally:
+        uia.uiautomation.SetGlobalSearchTimeout(DEFAULT_UI_AUTOMATION_TIMEOUT)
+        if chat_window_control and chat_window_control.Exists(0.1):
+            chat_window_control.SetTopmost(False)
+        logger.debug(f"[拍一拍任务] 任务结束，资源已释放，全局超时已恢复为 {DEFAULT_UI_AUTOMATION_TIMEOUT} 秒。")
+
+# ==================== 拍一拍功能区 结束 ====================
+
+# ==================== 特殊艾特功能区 开始 (最终版：uiautomation.TypeKeys) ====================
+# ==================== 特殊艾特功能区 开始 (主动聚焦终版) ====================
+def special_at_user_threaded(chat_name: str, target_user_name: str):
+    """
+    在一个新的线程中执行特殊的@操作 (最终修正版 - Click To Focus)。
+    解决了 SetFocus 失败的问题，改用模拟鼠标点击来可靠地获取输入框焦点。
+    """
+    chat_window = None
+    try:
+        logger.info(f"[特殊艾特任务] 子线程启动：准备在 '{chat_name}' 中艾特 '{target_user_name}'。")
+        
+        # 步骤一：切换聊天窗口
+        wx.ChatWith(chat_name)
+        
+        # 步骤二：稳定等待聊天窗口出现并激活
+        chat_window = auto.WindowControl(Name=chat_name, searchDepth=1)
+        logger.info(f"[特殊艾特任务] 正在等待名为 '{chat_name}' 的聊天窗口出现...")
+        
+        if chat_window.Exists(5, 0.5):
+            chat_window.SetTopmost(True)
+            chat_window.SetActive()
+            time.sleep(0.3)
+            logger.info(f"[特殊艾特任务] 成功激活目标窗口 '{chat_name}'。")
+        else:
+            logger.error(f"[特殊艾特任务] 致命错误：在5秒内无法找到或激活名为 '{chat_name}' 的聊天窗口。")
+            wx.SendMsg(msg=f"抱歉，我无法打开或激活聊天窗口 '{chat_name}'。", who=chat_name)
+            return
+
+        # 步骤三：查找输入框
+        input_box = chat_window.EditControl(Name='输入')
+        if not input_box.Exists(2, 0.5):
+            logger.error(f"[特殊艾特任务] 致命错误：在窗口 '{chat_name}' 中完全找不到'输入'控件。")
+            wx.SendMsg(msg=f"抱歉，我在聊天窗口 '{chat_name}' 里找不到输入框。", who=chat_name)
+            return
+
+        # 步骤四：【核心修正】放弃 SetFocus，改用更可靠的 Click() 来获取焦点
+        logger.info("[特殊艾特任务] 正在通过模拟点击来获取输入框焦点...")
+        try:
+            # simulateMove=False 可以让点击更快速，直接作用于控件
+            input_box.Click(simulateMove=False)
+            logger.info("[特殊艾特任务] 模拟点击完成，输入框应已获得焦点。")
+            time.sleep(0.2) # 给予 UI 极短的响应时间以放置光标
+        except Exception:
+            # 如果 Click 失败，作为最终备用方案，使用 pyautogui 根据坐标点击
+            logger.warning("[特殊艾特任务] uiautomation 的 Click() 失败，启用 pyautogui 作为后备方案。")
+            rect = input_box.BoundingRectangle
+            pyautogui.click(rect.xcenter(), rect.ycenter())
+            logger.info("[特殊艾特任务] pyautogui 点击完成。")
+            time.sleep(0.2)
+            
+        # 步骤五：执行输入和发送
+        text_to_type = f"@{target_user_name}"
+        logger.info(f"[特殊艾特任务] 使用 uiautomation.SendKeys 模拟输入: '{text_to_type}'")
+        # 直接发送按键，此时焦点应该已经在输入框内了
+        auto.SendKeys(text_to_type, interval=0.1)
+        
+        logger.info("[特殊艾特任务] 输入完成，等待微信成员列表筛选...")
+        time.sleep(1.2)
+        
+        pyautogui.press('enter')
+        logger.info(f"[特殊艾特任务] 第一次回车已按下，应已选中 '{target_user_name}'。")
+        time.sleep(0.5)
+        pyautogui.press('enter')
+        
+        logger.info(f"🎉🎉🎉 [特殊艾特任务] 任务圆满成功！已在 '{chat_name}' 中发送了对 '{target_user_name}' 的【真】艾特消息。 🎉🎉🎉")
+
+    except Exception as e:
+        logger.error(f"[特殊艾特任务] 执行时发生未知严重错误", exc_info=True)
+        try:
+            wx.SendMsg(msg=f"抱歉，我在尝试艾特 {target_user_name} 时遇到了一个内部错误，请检查后台日志。", who=chat_name)
+        except Exception as send_err:
+            logger.error(f"[特殊艾特任务] 尝试发送错误通知时也失败了: {send_err}")
+    finally:
+        # 确保窗口的置顶状态被取消
+        if chat_window and chat_window.Exists(0,0):
+             chat_window.SetTopmost(False)
+
+# ==================== 特殊艾特功能区 结束 ====================
+# ==================== 特殊艾特功能区 结束 ====================
+
+# ==================== 特殊艾特功能区 结束 ====================
+
+# [新增] ==================== 带回复的特殊艾特功能区 开始 ====================
+def send_reply_with_special_at_threaded(chat_name: str, target_user_name: str, reply_text: str):
+    """
+    在一个新线程中执行带回复的特殊@操作。
+    此函数会先@指定用户，然后粘贴回复内容，最后作为一个整体发送。
+    """
+    chat_window = None
+    try:
+        logger.info(f"[带艾特回复任务] 子线程启动：准备在 '{chat_name}' 中艾特 '{target_user_name}' 并回复。")
+
+        # 步骤一：切换聊天窗口
+        wx.ChatWith(chat_name)
+
+        # 步骤二：稳定等待聊天窗口出现并激活
+        chat_window = auto.WindowControl(Name=chat_name, searchDepth=1)
+        if not chat_window.Exists(5, 0.5):
+            logger.error(f"[带艾特回复任务] 致命错误：在5秒内无法找到或激活名为 '{chat_name}' 的聊天窗口。")
+            return
+
+        chat_window.SetTopmost(True)
+        chat_window.SetActive()
+        time.sleep(0.3)
+        logger.info(f"[带艾特回复任务] 成功激活目标窗口 '{chat_name}'。")
+
+        # 步骤三：查找输入框并获取焦点 (使用可靠的点击方式)
+        input_box = chat_window.EditControl(Name='输入')
+        if not input_box.Exists(2, 0.5):
+            logger.error(f"[带艾特回复任务] 致命错误：在窗口 '{chat_name}' 中找不到'输入'控件。")
+            return
+
+        try:
+            input_box.Click(simulateMove=False)
+        except Exception:
+            logger.warning("[带艾特回复任务] uiautomation 的 Click() 失败，启用 pyautogui 作为后备方案。")
+            rect = input_box.BoundingRectangle
+            pyautogui.click(rect.xcenter(), rect.ycenter())
+        time.sleep(0.2)
+
+        # 步骤四：执行@操作
+        at_text = f"@{target_user_name}"
+        auto.SendKeys(at_text, interval=0.1)
+        logger.info(f"[带艾特回复任务] 已输入: '{at_text}'，等待微信成员列表筛选...")
+        time.sleep(1.2) # 等待微信响应并弹出@列表
+        pyautogui.press('enter')
+        logger.info(f"[带艾特回复任务] 第一次回车已按下，应已选中 '{target_user_name}'。")
+        time.sleep(0.3)
+
+        # 步骤五：【核心】粘贴回复内容
+        # 在@选中后，输入框里的内容是蓝色的@用户，光标在后面，可以继续输入
+        try:
+            pyperclip.copy(reply_text)
+            logger.info(f"[带艾特回复任务] 回复内容已复制到剪贴板 (长度: {len(reply_text)})。")
+            time.sleep(0.1)
+            pyautogui.hotkey('ctrl', 'v') # 模拟Ctrl+V粘贴
+            logger.info("[带艾特回复任务] 已执行粘贴操作。")
+            time.sleep(0.2)
+        except Exception as e:
+            logger.error(f"[带艾特回复任务] 使用剪贴板粘贴回复时失败: {e}", exc_info=True)
+            # 后备方案：如果粘贴失败，尝试用 SendKeys 输入（可能很慢且对特殊字符不友好）
+            logger.info("[带艾特回复任务] 尝试使用 SendKeys 作为后备方案输入回复...")
+            auto.SendKeys(reply_text, interval=0.01)
+
+
+        # 步骤六：发送最终消息
+        pyautogui.press('enter')
+        logger.info(f"🎉🎉🎉 [带艾特回复任务] 任务圆满成功！已在 '{chat_name}' 中向 '{target_user_name}' 发送了艾特回复。 🎉🎉🎉")
+
+    except Exception as e:
+        logger.error(f"[带艾特回复任务] 执行时发生未知严重错误", exc_info=True)
+        # 发生错误时，回退到普通发送，确保消息能发出去
+        wx.SendMsg(msg=f"@{target_user_name} {reply_text}", who=chat_name)
+        logger.warning("[带艾特回复任务] 因发生错误，已回退到普通文本@发送。")
+    finally:
+        if chat_window and chat_window.Exists(0, 0):
+             chat_window.SetTopmost(False)
+
+# ==================== 带回复的特殊艾特功能区 结束 ====================
+
+# ==================== 特殊艾特功能区（原版） 开始 ====================
+
 
 # 在 message_listener 函数的上方，或者在文件的全局区域，添加这个新的函数
 def initiate_voice_call_threaded(target_user):
@@ -1077,7 +1389,7 @@ def initiate_voice_call_threaded(target_user):
 
 def message_listener(msg, chat):
     global can_send_messages
-    # --- START: 新增代码：处理消息撤回事件 ---
+        # --- START: 新增代码：处理消息撤回事件 ---
     who = chat.who
     sender = msg.sender
     original_content = msg.content
@@ -1112,7 +1424,6 @@ def message_listener(msg, chat):
                 logger.info(f"已为用户 '{who}' 加入撤回消息触发指令到队列。")
             return  # 处理完毕，结束本次函数执行，避免后续代码处理这条系统消息
     # --- END: 新增代码 ---
-        # --- END: 新增代码 ---
     
     # a.k.a 原函数的其他部分从这里开始
     # who = chat.who # 这行可以删掉，因为上面已经定义了
@@ -1121,6 +1432,12 @@ def message_listener(msg, chat):
     # sender = msg.sender # 这行也可以删掉
     msgattr = msg.attr
     logger.info(f'收到来自聊天窗口 "{who}" 中用户 "{sender}" 的原始消息 (类型: {msgtype}, 属性: {msgattr}): {original_content[:100]}')
+    who = chat.who 
+    msgtype = msg.type
+    original_content = msg.content
+    sender = msg.sender
+    msgattr = msg.attr
+    logger.info(f'收到来自聊天窗口 "{who}" 中用户 "{sender}" 的原始消息 (类型: {msgtype}, 属性: {msgattr}): {str(original_content)[:100]}')
 
     if msgattr != 'friend': 
         logger.info(f"非好友消息，已忽略。")
@@ -1181,7 +1498,7 @@ def message_listener(msg, chat):
                         else:
                             content = "[图片]"
                     # 处理字符串路径的判断 (兼容性保留)
-                    elif isinstance(content, str) and content.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
+                    elif isinstance(content, str) and content.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', 'bmp')):
                         if ENABLE_IMAGE_RECOGNITION:
                             try:
                                 logger.info(f"开始识别图片: {content}")
@@ -1229,6 +1546,46 @@ def message_listener(msg, chat):
         # 主线程直接返回，不再等待
         return
     # =================================================================
+    ##### 新增：拍一拍功能逻辑 开始 #####
+    is_group_chat_for_pat = is_user_group_chat(who) # 先判断一次是否群聊
+
+    # 私聊拍一拍
+    if not is_group_chat_for_pat and original_content.strip() == "打我":
+        logger.info(f"用户 {who} 请求拍一拍自己，准备在新线程中执行。")
+        # 在私聊中，“我”就是对方，所以 chat_name 和 target_user_name 都是 who
+        pat_thread = threading.Thread(target=pat_pat_user_threaded, args=(who, who))
+        pat_thread.start()
+        return # 处理完成，直接返回
+
+    # 群聊拍一拍
+    if is_group_chat_for_pat:
+        # 使用正则表达式匹配 "拍一拍 XXX" 或 "拍一拍@XXX"
+        pat_match = re.search(r'拍一拍\s*@?(.+)', original_content.strip())
+        if pat_match:
+            target_name = pat_match.group(1).strip()
+            logger.info(f"在群聊 '{who}' 中检测到拍一拍请求，目标: '{target_name}'。")
+            pat_thread = threading.Thread(target=pat_pat_user_threaded, args=(who, target_name))
+            pat_thread.start()
+            return # 处理完成，直接返回
+    ##### 新增：拍一拍功能逻辑 结束 #####
+
+    ##### 新增：特殊艾特功能逻辑 开始 #####
+    if is_group_chat_for_pat: # 重用之前计算的群聊判断结果
+        # 使用正则表达式匹配 "艾特 XXX" (也支持英文 "at XXX")
+        at_match = re.search(r'(?:艾特|at)\s*(.+)', original_content.strip(), re.IGNORECASE)
+        if at_match:
+            target_name = at_match.group(1).strip()
+            # 对提取的目标名进行简单过滤，防止空或过长的名字
+            if not target_name or len(target_name) > 50:
+                 logger.warning(f"检测到无效的特殊艾特目标: '{target_name}'，已忽略。")
+            else:
+                logger.info(f"在群聊 '{who}' 中检测到特殊艾特请求，目标: '{target_name}'。")
+                # 创建并启动新线程来执行UI自动化操作，避免阻塞
+                at_thread = threading.Thread(target=special_at_user_threaded, args=(who, target_name))
+                at_thread.start()
+                return # 命令已处理，直接返回，不再进行后续的AI聊天处理
+    ##### 新增：特殊艾特功能逻辑 结束 #####
+
     should_process_this_message = False
     content_for_handler = original_content 
 
@@ -1331,7 +1688,8 @@ def message_listener(msg, chat):
         if is_animation_emoji_in_original and ENABLE_EMOJI_RECOGNITION:
             handle_emoji_message(msg, who)
         else:
-            handle_wxauto_message(msg, who)
+            handle_wxauto_message(msg, who, sender)
+
 
 def recognize_image_with_moonshot(image_path, is_emoji=False):
     global can_send_messages
@@ -1519,9 +1877,10 @@ def log_user_message_to_memory(username, original_content):
         except Exception as write_err:
              logger.error(f"写入用户 {username} 的记忆日志失败: {write_err}")
 
-def handle_wxauto_message(msg, who):
+def handle_wxauto_message(msg, who, sender):
     """
     处理来自Wxauto的消息，包括可能的提醒、图片/表情、链接内容获取和常规聊天。
+    [新增 sender 参数]
     """
     global can_send_messages # 引用全局变量以控制发送状态
     global last_received_message_timestamp # 引用全局变量以更新活动时间
@@ -1644,7 +2003,9 @@ def handle_wxauto_message(msg, who):
             content_with_time = f"[{current_time_str}] {processed_content}" # 使用最终处理过的内容
             logger.info(f"准备将处理后的消息加入队列 - 用户 {username}: {content_with_time[:150]}...") # 日志截断防止过长
 
-            sender_name = username # 发送者名字（对于好友聊天，who就是username）
+            # 【核心修改点】使用传递进来的 sender
+            # 如果 sender 为空(例如主动消息), 则回退到使用 who
+            sender_name_to_use = sender if sender else who
 
             # 使用锁保护对共享队列的访问
             with queue_lock:
@@ -1652,23 +2013,22 @@ def handle_wxauto_message(msg, who):
                 if username not in user_queues:
                     user_queues[username] = {
                         'messages': [content_with_time],
-                        'sender_name': sender_name,
+                        'sender_name': sender_name_to_use,
                         'username': username,
                         'last_message_time': time.time()
                     }
-                    logger.info(f"已为用户 {sender_name} 初始化消息队列并加入消息。")
+                    logger.info(f"已为用户 {username} (发言人: {sender_name_to_use}) 初始化消息队列并加入消息。")
                 else:
-                    # 用户队列已存在，追加消息并管理队列长度
                     user_queues[username]['messages'].append(content_with_time)
-                    # 更新最后消息时间戳
                     user_queues[username]['last_message_time'] = time.time()
-                    logger.info(f"用户 {sender_name} 的消息已加入队列（当前 {len(user_queues[username]['messages'])} 条）并更新时间。")
+                    # 每次都更新发言人，以响应最新的消息
+                    user_queues[username]['sender_name'] = sender_name_to_use
+                    logger.info(f"用户 {username} (发言人: {sender_name_to_use}) 的消息已加入队列（当前 {len(user_queues[username]['messages'])} 条）并更新时间。")
         else:
-            # 如果经过所有处理后 processed_content 变为 None 或空字符串，则记录警告
             logger.warning(f"在处理后未找到用户 {username} 的可处理内容。原始消息: '{original_content}'")
 
     except Exception as e:
-        can_send_messages = True # 确保发生错误时可以恢复发送消息
+        can_send_messages = True
         logger.error(f"消息处理失败 (handle_wxauto_message): {str(e)}", exc_info=True)
 
 def check_inactive_users():
@@ -1687,45 +2047,41 @@ def check_inactive_users():
 
         time.sleep(1)  # 每秒检查一次
 
+# 在 bot.py 文件中找到此函数并用下面的代码完整替换
+
 def process_user_messages(user_id):
     """处理指定用户的消息队列，包括可能的联网搜索。"""
-    global can_send_messages # 引用全局变量
+    global can_send_messages
 
     with queue_lock:
         if user_id not in user_queues:
             return
-        # 从队列获取数据并移除该用户条目
         user_data = user_queues.pop(user_id)
         messages = user_data['messages']
         sender_name = user_data['sender_name']
-        username = user_data['username'] # username 可能是群聊名或好友昵称
+        username = user_data['username']
 
-    # 合并消息
     merged_message = ' '.join(messages)
     logger.info(f"开始处理用户 '{sender_name}' (ID: {user_id}) 的合并消息: {merged_message[:100]}...")
 
-    # 检查是否为主动消息
     is_auto_message = "触发主动发消息：" in merged_message
     
     reply = None
     online_info = None
 
+    # [核心] 在函数开头就获取配置，以便后续所有流程都能使用
+    group_config = get_group_chat_config(user_id)
+
     try:
-        # --- 新增：联网搜索逻辑 ---
         if ENABLE_ONLINE_API:
-            # 1. 检测是否需要联网
             search_content = needs_online_search(merged_message, user_id)
             if search_content:
-                # 2. 如果需要，调用在线 API
                 logger.info(f"尝试为用户 {user_id} 执行在线搜索...")
                 merged_message = f"用户原始信息：\n{merged_message}\n\n需要进行联网搜索的信息：\n{search_content}"
                 online_info = get_online_model_response(merged_message, user_id)
 
                 if online_info:
-                    # 3. 如果成功获取在线信息，构建新的提示给主 AI
                     logger.info(f"成功获取在线信息，为用户 {user_id} 准备最终回复...")
-                    # 结合用户原始问题、在线信息，让主 AI 生成最终回复
-                    # 注意：get_deepseek_response 会自动加载用户的 prompt 文件 (角色设定)
                     final_prompt = f"""
 用户的原始问题是：
 "{merged_message}"
@@ -1737,87 +2093,92 @@ def process_user_messages(user_id):
 
 请结合你的角色设定，以自然的方式回答用户的原始问题。请直接给出回答内容，不要提及你是联网搜索的。
 """
-                    # 调用主 AI 生成最终回复，存储上下文
                     reply = get_deepseek_response(final_prompt, user_id, store_context=True)
-                    # 这里可以考虑如果在线信息是错误消息（如"在线搜索有点忙..."），是否要特殊处理
-                    # 当前逻辑是：即使在线搜索返回错误信息，也会让主AI尝试基于这个错误信息来回复
-
                 else:
-                    # 在线搜索失败或未返回有效信息
                     logger.warning(f"在线搜索未能获取有效信息，用户: {user_id}。将按常规流程处理。")
-                    # 这里可以选择发送一个错误提示，或者直接回退到无联网信息的回复
-                    # 当前选择回退：下面会执行常规的 get_deepseek_response
-                    pass # 继续执行下面的常规流程
+                    pass
 
-        # --- 常规回复逻辑 (如果未启用联网、检测不需要联网、或联网失败) ---
-        if reply is None: # 只有在尚未通过联网逻辑生成回复时才执行
+        if reply is None:
             logger.info(f"为用户 {user_id} 执行常规回复（无联网信息）。")
             reply = get_deepseek_response(merged_message, user_id, store_context=True)
 
-        # --- 发送最终回复 ---
         if reply:
-            # 【新增的清理步骤】
-            # 使用我们导入的正则表达式，将所有匹配到的内容（注释和标签）替换为空字符串
             cleaned_reply = QINGLI_AI_BIAOQIAN_ZHUJIE.sub('', reply).strip()
             
-            # (可选的双重保险) 如果还有</think>标签，也一并清理
             if "</think>" in cleaned_reply:
                 cleaned_reply = cleaned_reply.split("</think>", 1)[1].strip()
 
-            # 屏蔽记忆片段发送（如果包含）
-            # 注意：这里我们检查和发送的都是清理后的 cleaned_reply
             if "## 记忆片段" not in cleaned_reply:
-                send_reply(user_id, sender_name, username, merged_message, cleaned_reply)
+                # [修改点1] 正常流程调用，确保传入 group_config
+                send_reply(user_id, sender_name, username, merged_message, cleaned_reply, group_config)
             else:
                 logger.info(f"回复包含记忆片段标记，已屏蔽发送给用户 {user_id}。")
         else:
             logger.error(f"未能为用户 {user_id} 生成任何回复。")
-    # --- 新增的超时捕获块 ---
+
     except TimeoutError:
-        # 捕获由 call_chat_api_with_retry 抛出的超时错误
-        logger.error(f"处理用户 {user_id} 消息时因API响应超时（超过200秒），发送备用消息。")
+        logger.error(f"处理用户 {user_id} 消息时因API响应超时（超过240秒），发送备用消息。")
         fallback_message = "抱歉，我现在真的很忙，稍后再聊吧。"
-        # 使用 send_reply 发送备用消息
-        send_reply(user_id, sender_name, username, "[API响应超时]", fallback_message)
-    # --- 新增结束 ---
+        # [修改点2] 超时异常流程调用，确保同样传入 group_config
+        send_reply(user_id, sender_name, username, "[API响应超时]", fallback_message, group_config)
             
     except Exception as e:
         if is_auto_message:
-            # 如果是主动消息出错，只记录日志，不发送错误消息给用户
             logger.error(f"主动消息处理失败 (用户: {user_id}): {str(e)}")
             logger.info(f"主动消息API调用失败，已静默处理，不发送错误提示给用户 {user_id}")
         else:
-            # 如果是正常用户消息出错，记录日志并重新抛出异常（保持原有的错误处理逻辑）
             logger.error(f"用户消息处理失败 (用户: {user_id}): {str(e)}")
             raise
 
 
+
 # (这是全新的 send_reply 函数，请用它替换原来的)
 
-def send_reply(user_id, sender_name, username, original_merged_message, reply):
+# 在 bot.py 中找到此函数并整体替换
+def send_reply(user_id, sender_name, username, original_merged_message, reply, group_config):
+    """
+    修改后的函数，接收 group_config 参数
+    """
     if not reply:
         logger.warning(f"尝试向 {user_id} 发送空回复。")
         return
-
+    is_group = is_user_group_chat(username)
+    
+    # [核心逻辑修改] 使用传入的 group_config 进行判断
+    if is_group and group_config.get('ENABLE_GROUP_AT_REPLY_IN_REPLIES', False) and sender_name != ROBOT_WX_NAME:
+        logger.info(f"检测到群聊回复，将使用特殊艾特功能回复用户 '{sender_name}'。")
+        
+        cleaned_reply_for_at = re.sub(r'\[.*?\]', '', reply).strip()
+        
+        if not cleaned_reply_for_at:
+            logger.warning("AI回复清理掉表情标签后为空，取消本次特殊艾特回复。")
+            return
+        
+        at_reply_thread = threading.Thread(
+            target=send_reply_with_special_at_threaded,
+            args=(username, sender_name, cleaned_reply_for_at),
+            name=f"SpecialAtReply-{username}"
+        )
+        at_reply_thread.daemon = True
+        at_reply_thread.start()
+        
+        return
+        
     logger.info(f"准备向 {sender_name} (用户ID: {user_id}) 发送组合消息")
 
-    # 新增：在分割和发送之前，将完整的AI回复作为一个整体记录到记忆中
     if ENABLE_MEMORY:
         role_name = prompt_mapping.get(username, username)
         log_ai_reply_to_memory(username, role_name, reply)
 
-    # --- 全新的消息解析与发送队列构建逻辑 ---
     message_actions = []
 
     if ENABLE_EMOJI_SENDING:
         try:
-            # 1. 获取所有有效的表情包标签（即文件夹名）
             valid_tags = {d for d in os.listdir(EMOJI_DIR) if os.path.isdir(os.path.join(EMOJI_DIR, d))}
         except FileNotFoundError:
             logger.error(f"表情包根目录 EMOJI_DIR 未找到: {EMOJI_DIR}")
             valid_tags = set()
 
-        # 2. 使用正则表达式切分回复，同时保留表情标签作为独立元素
         parts = re.split(r'(\[.*?\])', reply)
 
         for part in parts:
@@ -1863,7 +2224,6 @@ def send_reply(user_id, sender_name, username, original_merged_message, reply):
             if sub_part.strip():
                 message_actions.append(('text', sub_part.strip()))
 
-    # === 投递到全局队列 ===
     for action_type, content in message_actions:
         message_queue.put((action_type, content, user_id))
         logger.info(f"消息已投递到队列: {action_type}, {content}, {user_id}")

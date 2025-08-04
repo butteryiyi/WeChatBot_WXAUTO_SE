@@ -2494,55 +2494,65 @@ if (switchPromptModal) {
                         if (!res.ok) throw new Error('加载失败');
                         const data = await res.json();
                         // 构建"使用全局配置"checkbox
-                        let useGlobalCheckboxHtml = '';
-                        if (username !== '__global__') {
-                            useGlobalCheckboxHtml = `
-                                <div class="form-group">
-                                  <label><input type="checkbox" id="useGlobalConfigCheckbox" ${data.use_global ? 'checked' : ''}> 使用全局配置</label>
-                                </div>
-                            `;
-                        } else {
-                            useGlobalCheckboxHtml = `
-                                <div class="form-group">
-                                  <label><input type="checkbox" id="useGlobalConfigCheckbox" checked disabled> 使用全局配置</label>
-                                </div>
-                            `;
-                        }
-                        // 构建专属配置表单
-                        let userFormHtml = `
-                            <h3 style="margin-top:20px;">${username === '__global__' ? '全局配置' : username + ' 的群聊专属配置'}</h3>
-                            ${useGlobalCheckboxHtml}
-                            <div id="userConfigFields">
-                                <div class="form-group">
-                                    <label>群聊消息处理模式:</label>
-                                    <select name="ACCEPT_ALL_GROUP_CHAT_MESSAGES">
-                                        <option value="False" ${data.ACCEPT_ALL_GROUP_CHAT_MESSAGES === false ? 'selected' : ''}>仅接收满足条件的消息</option>
-                                        <option value="True" ${data.ACCEPT_ALL_GROUP_CHAT_MESSAGES === true ? 'selected' : ''}>接收所有群聊消息</option>
-                                    </select>
-                                </div>
-                                <div class="form-group">
-                                    <label>被@时回复</label>
-                                    <input type="checkbox" name="ENABLE_GROUP_AT_REPLY" ${data.ENABLE_GROUP_AT_REPLY ? 'checked' : ''}>
-                                </div>
-                                <div class="form-group">
-                                    <label>关键词触发回复</label>
-                                    <input type="checkbox" name="ENABLE_GROUP_KEYWORD_REPLY" ${data.ENABLE_GROUP_KEYWORD_REPLY ? 'checked' : ''}>
-                                </div>
-                                <div class="form-group">
-                                    <label>回复触发关键词列表:</label>
-                                    <input type="text" name="GROUP_KEYWORD_LIST" value="${data.GROUP_KEYWORD_LIST || ''}">
-                                </div>
-                                <div class="form-group">
-                                    <label>群聊回复概率 (0-100):</label>
-                                    <input type="number" name="GROUP_CHAT_RESPONSE_PROBABILITY" value="${data.GROUP_CHAT_RESPONSE_PROBABILITY || 100}">
-                                </div>
-                                <div class="form-group">
-                                    <label>关键词触发时忽略回复概率</label>
-                                    <input type="checkbox" name="GROUP_KEYWORD_REPLY_IGNORE_PROBABILITY" ${data.GROUP_KEYWORD_REPLY_IGNORE_PROBABILITY ? 'checked' : ''}>
-                                </div>
+                    // ======================== [ 请从这里开始替换 ] ========================
+
+                    // 构建"使用全局配置"checkbox
+                    let useGlobalCheckboxHtml = '';
+                    if (username !== '__global__') {
+                        useGlobalCheckboxHtml = `
+                            <div class="form-group">
+                            <label><input type="checkbox" id="useGlobalConfigCheckbox" ${data.use_global ? 'checked' : ''}> 使用全局配置</label>
                             </div>
-                            <button type="button" class="nav-button" style="background-color:#4caf50;" onclick="saveUserGroupChatConfig('${username}')">保存${username === '__global__' ? '全局' : '该用户'}配置</button>
                         `;
+                    }
+                    // 构建专属配置表单
+                    let userFormHtml = `
+                        <h3 style="margin-top:20px;">${username === '__global__' ? '全局配置' : username + ' 的群聊专属配置'}</h3>
+                        ${useGlobalCheckboxHtml}
+                        <div id="userConfigFields">
+                            <div class="form-group">
+                                <label>群聊消息处理模式:</label>
+                                <select name="ACCEPT_ALL_GROUP_CHAT_MESSAGES" class="form-control">
+                                    <option value="False" ${!data.ACCEPT_ALL_GROUP_CHAT_MESSAGES ? 'selected' : ''}>仅接收满足条件的消息 (被@/关键词)</option>
+                                    <option value="True" ${data.ACCEPT_ALL_GROUP_CHAT_MESSAGES ? 'selected' : ''}>接收所有群聊消息</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label style="display:inline-block; margin-right: 10px;">被@时回复</label>
+                                <input type="checkbox" name="ENABLE_GROUP_AT_REPLY" ${data.ENABLE_GROUP_AT_REPLY ? 'checked' : ''}>
+                            </div>
+
+                            <!-- ========== [这是新添加的代码块] ========== -->
+                            <div class="form-group">
+                                <label style="display:inline-block; margin-right: 10px;">群聊回复时自动@发言人</label>
+                                <input type="checkbox" name="ENABLE_GROUP_AT_REPLY_IN_REPLIES" ${data.ENABLE_GROUP_AT_REPLY_IN_REPLIES ? 'checked' : ''}>
+                                <small class="form-text text-muted" style="margin-top: 5px;">
+                                    启用后，机器人回复时会自动以<strong style="color: #007bff;">可点击的“真艾特”</strong>形式提及发言人。（需要微信在可见区域）
+                                </small>
+                            </div>
+                            <!-- ========== [新代码块结束] ========== -->
+
+                            <div class="form-group">
+                                <label style="display:inline-block; margin-right: 10px;">关键词触发回复</label>
+                                <input type="checkbox" name="ENABLE_GROUP_KEYWORD_REPLY" ${data.ENABLE_GROUP_KEYWORD_REPLY ? 'checked' : ''}>
+                            </div>
+                            <div class="form-group">
+                                <label>回复触发关键词列表 (用逗号或空格分隔):</label>
+                                <input type="text" name="GROUP_KEYWORD_LIST" class="form-control" value="${data.GROUP_KEYWORD_LIST || ''}">
+                            </div>
+                            <div class="form-group">
+                                <label>群聊回复概率 (0-100):</label>
+                                <input type="number" name="GROUP_CHAT_RESPONSE_PROBABILITY" class="form-control" value="${data.GROUP_CHAT_RESPONSE_PROBABILITY || 100}">
+                            </div>
+                            <div class="form-group">
+                                <label style="display:inline-block; margin-right: 10px;">关键词触发时忽略回复概率</label>
+                                <input type="checkbox" name="GROUP_KEYWORD_REPLY_IGNORE_PROBABILITY" ${data.GROUP_KEYWORD_REPLY_IGNORE_PROBABILITY ? 'checked' : ''}>
+                            </div>
+                        </div>
+                        <button type="button" class="nav-button" style="background-color:#4caf50;" onclick="saveUserGroupChatConfig('${username}')">保存${username === '__global__' ? '全局' : '该用户'}配置</button>
+                    `;
+                    
+                    // ======================== [ 到这里替换结束 ] ========================
                         userGroupChatConfigContainer.innerHTML = '';
                         const form = document.createElement('form');
                         form.id = 'userGroupChatConfigForm';
@@ -3057,7 +3067,7 @@ if (switchPromptModal) {
     <button id="mobileMenuToggle">☰</button> 
 
     <div class="header-bar">
-        <div class="header-title"><h1>WeChatBot配置编辑器 v3.23.2</h1></div>
+        <div class="header-title"><h1>WeChatBot配置编辑器 v3.22.11</h1></div>
         <div class="buttons">
             <button id="botButton" class="nav-button">Start Bot</button>
             <button type="submit" form="configForm" id="saveConfigButton" class="nav-button" style="background-color: #4CAF50;">保存配置</button>
