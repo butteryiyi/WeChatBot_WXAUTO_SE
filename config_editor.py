@@ -38,6 +38,7 @@ from queue import Queue, Empty
 import time
 import json
 import threading
+from datetime import datetime
 
 app = Flask(__name__)
 
@@ -104,8 +105,9 @@ def validate_config_types(config_path):
         issues = []
         
         # 检查应该是整数但被保存为字符串的配置项
+        # --- 修改：移除了 'MAX_MEMORY_NUMBER' ---
         int_fields = ['MAX_GROUPS', 'MAX_TOKEN', 'QUEUE_WAITING_TIME', 'EMOJI_SENDING_PROBABILITY', 
-                     'MAX_MESSAGE_LOG_ENTRIES', 'MAX_MEMORY_NUMBER', 'PORT', 'ONLINE_API_MAX_TOKEN',
+                     'MAX_MESSAGE_LOG_ENTRIES', 'PORT', 'ONLINE_API_MAX_TOKEN',
                      'REQUESTS_TIMEOUT', 'MAX_WEB_CONTENT_LENGTH', 'RESTART_INACTIVITY_MINUTES',
                      'GROUP_CHAT_RESPONSE_PROBABILITY', 'ASSISTANT_MAX_TOKEN']
         
@@ -1545,6 +1547,7 @@ def clear_chat_context(username):
 
 
 def get_default_config():
+    # --- 修改：移除了 MAX_MEMORY_NUMBER ---
     return {
         "LISTEN_LIST": [['微信名1', '角色1']],
         "DEEPSEEK_API_KEY": '',
@@ -1576,7 +1579,6 @@ def get_default_config():
         "ENABLE_MEMORY": True,
         "MEMORY_TEMP_DIR": 'Memory_Temp',
         "MAX_MESSAGE_LOG_ENTRIES": 30,
-        "MAX_MEMORY_NUMBER": 50,
         "UPLOAD_MEMORY_TO_AI": True,
         "ACCEPT_ALL_GROUP_CHAT_MESSAGES": False,
         "ENABLE_GROUP_AT_REPLY": True,
@@ -1814,10 +1816,15 @@ def save_user_chat_context(username):
  
     return jsonify({'status': 'success', 'message': f"用户 '{username}' 的上下文已更新"})
 
+# ======================== [修改后的核心记忆API] ========================
+
 @app.route('/api/get_memory_summary/<username>', methods=['GET'])
 @login_required
 def get_user_memory_summary(username):
-    """获取单个用户的、与其当前活动Prompt关联的核心记忆内容"""
+    """
+    获取单个用户的、与其当前活动Prompt关联的核心记忆内容。
+    [兼容性修改] 新增对旧版列表格式核心记忆文件的读取支持，并统一返回新格式给前端。
+    """
     try:
         config = parse_config()
         listen_list = config.get('LISTEN_LIST', [])
@@ -1828,55 +1835,73 @@ def get_user_memory_summary(username):
         app.logger.error(f"解析配置文件以查找用户Prompt时出错: {e}")
         return jsonify({'error': '解析配置文件失败'}), 500
 
-    # 新的文件名格式: 用户名_角色名.json
     safe_user_filename_part = safe_filename(username)
     safe_prompt_filename_part = safe_filename(current_prompt_name)
     target_filename = f"{safe_user_filename_part}_{safe_prompt_filename_part}.json"
     file_path = os.path.join(MEMORY_SUMMARIES_DIR, target_filename)
     
+    # 定义一个默认的空记忆结构
+    default_memory = {"timestamp": "", "content": ""}
+
     if os.path.exists(file_path):
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-                # 确保返回的是JSON字符串化的列表
                 if not content.strip():
-                    return jsonify({'summary': '[]'})
+                    return jsonify(default_memory)
                 
-                # 直接将文件内容作为summary返回，因为前端会解析
-                # 为了美观，可以重新格式化
-                try:
-                    data = json.loads(content)
-                    pretty_summary = json.dumps(data, ensure_ascii=False, indent=4)
-                    return jsonify({'summary': pretty_summary})
-                except json.JSONDecodeError:
-                     # 如果内容不是有效的JSON，按原样返回给前端处理
-                    return jsonify({'summary': content})
-        except IOError as e:
-            app.logger.error(f"读取核心记忆文件失败 ({file_path}): {e}")
-            return jsonify({'error': f'读取文件失败: {str(e)}'}), 500
+                memory_data = json.loads(content)
+                
+                # [兼容性修改] 智能判断格式并统一输出
+                if isinstance(memory_data, dict):
+                    # 是新格式，确保字段完整后直接返回
+                    memory_data.setdefault('content', '')
+                    memory_data.setdefault('timestamp', '')
+                    return jsonify(memory_data)
+                
+                elif isinstance(memory_data, list):
+                    # 是旧格式，转换为新格式再返回给前端
+                    app.logger.info(f"UI请求：检测到用户 {username} 的旧版列表格式核心记忆，将进行兼容性转换。")
+                    all_summaries = [item.get("summary", "") for item in memory_data if item.get("summary")]
+                    combined_content = "\n".join(all_summaries).strip()
+                    
+                    # 模拟一个新格式的返回对象
+                    converted_memory = {
+                        "timestamp": "旧格式-无时间戳",
+                        "content": combined_content
+                    }
+                    return jsonify(converted_memory)
+                
+                else:
+                    # 未知格式
+                    app.logger.warning(f"核心记忆文件 {target_filename} 内容不是预期的字典或列表格式。")
+                    return jsonify({"timestamp": "文件格式错误", "content": content})
+
+        except (IOError, json.JSONDecodeError) as e:
+            app.logger.error(f"读取或解析核心记忆文件失败 ({file_path}): {e}")
+            default_memory['content'] = f"错误：无法读取或解析记忆文件。\n\n{str(e)}"
+            return jsonify(default_memory), 500
     else:
-        # 文件不存在时，返回一个代表空列表的JSON字符串
-        return jsonify({'summary': '[]'})
+        # 文件不存在时，返回默认的空记忆结构
+        return jsonify(default_memory)
+
 
 @app.route('/api/save_memory_summary/<username>', methods=['POST'])
 @login_required
 def save_user_memory_summary(username):
-    """保存指定用户修改后的、与其当前活动Prompt关联的记忆片段总结"""
+    """保存指定用户修改后的核心记忆（新版单条格式）"""
     if bot_process and bot_process.poll() is None:
         return jsonify({'error': '程序正在运行，请先停止再保存记忆'}), 400
         
     data = request.get_json()
-    if not data or 'summary' not in data:
-        return jsonify({'status': 'error', 'message': '请求无效，缺少 "summary" 字段'}), 400
+    if not data or 'content' not in data:
+        return jsonify({'status': 'error', 'message': '请求无效，缺少 "content" 字段'}), 400
 
-    new_summary_str = data['summary']
+    new_content = data['content']
     
-    try:
-        new_summary_list = json.loads(new_summary_str)
-        if not isinstance(new_summary_list, list):
-            raise ValueError("记忆数据必须是一个JSON数组 (list)")
-    except (json.JSONDecodeError, ValueError) as e:
-        return jsonify({'status': 'error', 'message': f'格式错误: {str(e)}'}), 400
+    # 验证内容是字符串
+    if not isinstance(new_content, str):
+        return jsonify({'status': 'error', 'message': '格式错误: 核心记忆内容必须是字符串。'}), 400
     
     # 获取用户当前使用的Prompt
     try:
@@ -1889,7 +1914,7 @@ def save_user_memory_summary(username):
         app.logger.error(f"解析配置文件以查找用户Prompt时出错: {e}")
         return jsonify({'error': '解析配置文件失败'}), 500
 
-    # 新的文件名格式: 用户名_角色名.json
+    # 构建文件名和锁路径
     safe_user_filename_part = safe_filename(username)
     safe_prompt_filename_part = safe_filename(current_prompt_name)
     target_filename = f"{safe_user_filename_part}_{safe_prompt_filename_part}.json"
@@ -1900,17 +1925,25 @@ def save_user_memory_summary(username):
         try:
             os.makedirs(MEMORY_SUMMARIES_DIR, exist_ok=True)
             
-            # 直接覆盖写入到独立文件
+            # 创建要保存的完整数据结构
+            memory_to_save = {
+                "timestamp": datetime.now().strftime("%Y-%m-%d %A %H:%M:%S"),
+                "content": new_content.strip()
+            }
+            
+            # 原子化写入
             temp_file_path = file_path + ".tmp"
             with open(temp_file_path, 'w', encoding='utf-8') as f:
-                json.dump(new_summary_list, f, ensure_ascii=False, indent=4)
+                json.dump(memory_to_save, f, ensure_ascii=False, indent=4)
             shutil.move(temp_file_path, file_path)
 
         except Exception as e:
             app.logger.error(f"保存记忆文件 {target_filename} 失败: {e}")
             return jsonify({'status': 'error', 'message': f'保存失败: {str(e)}'}), 500
 
-    return jsonify({'status': 'success', 'message': f"用户 '{username}' 的记忆已更新"})
+    return jsonify({'status': 'success', 'message': f"用户 '{username}' 的核心记忆已更新"})
+
+# =========================================================================
 
 @app.route('/api/delete_memory_summary/<username>', methods=['POST'])
 @login_required
@@ -2015,58 +2048,54 @@ def save_user_group_chat_config_api(username):
         return jsonify({'error': '无效数据'}), 400
         
     all_config = load_user_group_chat_config()
-    # 使用 get 获取旧配置，如果不存在则为空字典
-    old_config = all_config.get(username, {})
-    
-    # 将前端传来的新数据合并到旧数据上
-    merged_config = {**old_config, **data}
+    # 获取该用户的现有配置，如果不存在则使用空字典
+    user_config = all_config.get(username, {})
 
-    # --- 核心修复：在这里进行严格的类型转换 ---
-    
-    # 定义需要转换类型的字段和它们的目标类型
-    type_map = {
-        "ACCEPT_ALL_GROUP_CHAT_MESSAGES": bool,
-        "ENABLE_GROUP_AT_REPLY": bool,
-        "ENABLE_GROUP_AT_REPLY_IN_REPLIES": bool,  # <--- [新增这一行]
-        "ENABLE_GROUP_KEYWORD_REPLY": bool,
-        "GROUP_KEYWORD_REPLY_IGNORE_PROBABILITY": bool,
-        "use_global": bool,
-        "GROUP_CHAT_RESPONSE_PROBABILITY": int
-    }
+    # --- [核心修复逻辑] ---
+    # 1. 直接将前端发来的所有数据更新到用户配置中。
+    # 这样，如果前端发来了 "FIELD": true/false，它会正确更新。
+    # 对于非布尔值字段，如果前端没有发送，旧值会被保留。
+    user_config.update(data)
 
-    for key, target_type in type_map.items():
-        if key in merged_config:
-            value = merged_config[key]
-            
-            # 转换为布尔值
-            if target_type == bool:
-                # 兼容前端可能传来的各种布尔值表示：
-                # true (JSON bool), "true" (string), "True" (string), "on", 1
-                if isinstance(value, str):
-                    merged_config[key] = value.lower() in ('true', 'on', '1')
-                else:
-                    # 对于非字符串（如JS的true/false或数字1/0），直接用bool()转换
-                    merged_config[key] = bool(value)
+    # 2. 定义此表单应该处理的所有布尔复选框
+    boolean_keys_in_form = [
+        "ACCEPT_ALL_GROUP_CHAT_MESSAGES",
+        "ENABLE_GROUP_AT_REPLY",
+        "ENABLE_GROUP_AT_REPLY_IN_REPLIES",
+        "ENABLE_GROUP_KEYWORD_REPLY",
+        "GROUP_KEYWORD_REPLY_IGNORE_PROBABILITY",
+        "use_global"
+    ]
 
-            # 转换为整数
-            elif target_type == int:
-                try:
-                    # 尝试将值转换为整数，如果失败则使用默认值100
-                    merged_config[key] = int(value)
-                except (ValueError, TypeError):
-                    app.logger.warning(f"为用户'{username}'转换 {key} 失败，值: '{value}'。将使用默认值100。")
-                    merged_config[key] = 100 # 设置一个安全合理的默认值
-    
-    # 确保 GROUP_KEYWORD_LIST 是字符串
-    if "GROUP_KEYWORD_LIST" in merged_config:
-        merged_config["GROUP_KEYWORD_LIST"] = str(merged_config["GROUP_KEYWORD_LIST"])
+    # 3. 关键一步：遍历所有预期的布尔键。
+    # 如果某个键在前端发来的 `data` 中不存在，说明对应的复选框未勾选，应设为 False。
+    for key in boolean_keys_in_form:
+        if key not in data:
+            # 全局配置没有 use_global 字段，所以跳过对它的处理
+            if username == "__global__" and key == "use_global":
+                continue
+            user_config[key] = False
 
-    # 全局配置不保存 use_global 字段
-    if username == "__global__" and "use_global" in merged_config:
-        merged_config.pop("use_global")
+    # --- [确保数据类型正确] ---
+    # 确保概率值是整数
+    try:
+        # 仅当 user_config 中存在该键时才进行转换
+        if "GROUP_CHAT_RESPONSE_PROBABILITY" in user_config:
+            # 如果值为空字符串或None，则使用默认值100
+            prob_value = user_config["GROUP_CHAT_RESPONSE_PROBABILITY"]
+            if prob_value is None or str(prob_value).strip() == '':
+                user_config["GROUP_CHAT_RESPONSE_PROBABILITY"] = 100
+            else:
+                user_config["GROUP_CHAT_RESPONSE_PROBABILITY"] = int(prob_value)
+    except (ValueError, TypeError):
+        user_config["GROUP_CHAT_RESPONSE_PROBABILITY"] = 100 # 出错时也设置为默认值
 
-    # 将处理好的配置存回
-    all_config[username] = merged_config
+    # 确保关键词列表是字符串
+    if "GROUP_KEYWORD_LIST" in user_config:
+         user_config["GROUP_KEYWORD_LIST"] = str(user_config.get("GROUP_KEYWORD_LIST", ""))
+
+    # 更新总配置并保存
+    all_config[username] = user_config
     save_user_group_chat_config(all_config)
     
     return jsonify({'status': 'success', 'message': f'配置已为 {username} 保存'})
@@ -2115,4 +2144,3 @@ if __name__ == '__main__':
     Timer(1, open_browser).start()  # 延迟1秒确保服务器已启动
     
     app.run(host="0.0.0.0", debug=False, port=PORT)
-    
