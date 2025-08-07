@@ -2039,66 +2039,76 @@ def get_user_group_chat_config(username):
     return jsonify(user_config)
 
 
-
+# ======================================================================
+# ===== 将此函数完整替换掉你文件中的旧版本 =====
+# ======================================================================
 @app.route('/api/save_user_group_chat_config/<username>', methods=['POST'])
 @login_required
 def save_user_group_chat_config_api(username):
+    """
+    保存用户独立的群聊配置，对布尔值进行严格和健壮的类型转换。
+    """
     data = request.get_json()
-    if not data:
+    if data is None:
         return jsonify({'error': '无效数据'}), 400
         
     all_config = load_user_group_chat_config()
-    # 获取该用户的现有配置，如果不存在则使用空字典
-    user_config = all_config.get(username, {})
+    
+    # --- [最终修复：构建全新配置，进行严格布尔判断] ---
+    
+    def to_bool(value):
+        """一个健壮的函数，将各种输入转换为纯布尔值。"""
+        if value is None:
+            return False
+        if isinstance(value, bool):
+            return value
+        # 核心：将值转为小写字符串，然后判断是否为'true'等肯定词
+        return str(value).strip().lower() in ('true', '1', 'on', 'yes')
 
-    # --- [核心修复逻辑] ---
-    # 1. 直接将前端发来的所有数据更新到用户配置中。
-    # 这样，如果前端发来了 "FIELD": true/false，它会正确更新。
-    # 对于非布尔值字段，如果前端没有发送，旧值会被保留。
-    user_config.update(data)
-
-    # 2. 定义此表单应该处理的所有布尔复选框
-    boolean_keys_in_form = [
+    # 定义此表单应该处理的所有布尔字段
+    boolean_keys = {
         "ACCEPT_ALL_GROUP_CHAT_MESSAGES",
         "ENABLE_GROUP_AT_REPLY",
         "ENABLE_GROUP_AT_REPLY_IN_REPLIES",
         "ENABLE_GROUP_KEYWORD_REPLY",
         "GROUP_KEYWORD_REPLY_IGNORE_PROBABILITY",
         "use_global"
-    ]
+    }
+    
+    # 从头构建一个新的、干净的配置字典，避免旧数据污染
+    new_user_config = {}
 
-    # 3. 关键一步：遍历所有预期的布尔键。
-    # 如果某个键在前端发来的 `data` 中不存在，说明对应的复选框未勾选，应设为 False。
-    for key in boolean_keys_in_form:
-        if key not in data:
-            # 全局配置没有 use_global 字段，所以跳过对它的处理
-            if username == "__global__" and key == "use_global":
-                continue
-            user_config[key] = False
+    # 1. 严格处理所有布尔值
+    for key in boolean_keys:
+        if username == "__global__" and key == "use_global":
+            continue
+        # 使用健壮的 to_bool 函数确保结果一定是 True 或 False
+        new_user_config[key] = to_bool(data.get(key))
 
-    # --- [确保数据类型正确] ---
-    # 确保概率值是整数
+    # 2. 处理其他字段并确保类型正确
     try:
-        # 仅当 user_config 中存在该键时才进行转换
-        if "GROUP_CHAT_RESPONSE_PROBABILITY" in user_config:
-            # 如果值为空字符串或None，则使用默认值100
-            prob_value = user_config["GROUP_CHAT_RESPONSE_PROBABILITY"]
-            if prob_value is None or str(prob_value).strip() == '':
-                user_config["GROUP_CHAT_RESPONSE_PROBABILITY"] = 100
-            else:
-                user_config["GROUP_CHAT_RESPONSE_PROBABILITY"] = int(prob_value)
+        prob_value = data.get("GROUP_CHAT_RESPONSE_PROBABILITY")
+        # 如果值为空字符串或None，则使用默认值100
+        if prob_value is None or str(prob_value).strip() == '':
+            new_user_config["GROUP_CHAT_RESPONSE_PROBABILITY"] = 100
+        else:
+            new_user_config["GROUP_CHAT_RESPONSE_PROBABILITY"] = int(prob_value)
     except (ValueError, TypeError):
-        user_config["GROUP_CHAT_RESPONSE_PROBABILITY"] = 100 # 出错时也设置为默认值
+        new_user_config["GROUP_CHAT_RESPONSE_PROBABILITY"] = 100 # 出错时也设置为默认值
 
     # 确保关键词列表是字符串
-    if "GROUP_KEYWORD_LIST" in user_config:
-         user_config["GROUP_KEYWORD_LIST"] = str(user_config.get("GROUP_KEYWORD_LIST", ""))
+    new_user_config["GROUP_KEYWORD_LIST"] = str(data.get("GROUP_KEYWORD_LIST", ""))
 
-    # 更新总配置并保存
-    all_config[username] = user_config
+    # --- [逻辑结束] ---
+
+    # 将全新的、干净的配置存入
+    all_config[username] = new_user_config
     save_user_group_chat_config(all_config)
     
+    app.logger.info(f"成功为用户 '{username}' 保存群聊配置(最终修复版): {new_user_config}")
     return jsonify({'status': 'success', 'message': f'配置已为 {username} 保存'})
+
+
 
 
 if __name__ == '__main__':
