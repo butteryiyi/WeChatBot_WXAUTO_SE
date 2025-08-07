@@ -1564,11 +1564,18 @@ def message_listener(msg, chat):
     ##### 新增：拍一拍功能逻辑 开始 #####
     is_group_chat_for_pat = is_user_group_chat(who) # 先判断一次是否群聊
 
-    # 【重要修改】: 删除了旧的私聊拍一拍触发逻辑
-    
-    # 群聊拍一拍
-    if is_group_chat_for_pat:
-        # 使用正则表达式匹配 "拍一拍 XXX" 或 "拍一拍@XXX"
+    # 根据聊天类型（私聊或群聊）执行不同的拍一拍逻辑
+    if not is_group_chat_for_pat:
+        # **私聊逻辑**: 精确匹配 "拍一拍我"
+        if original_content == "拍一拍我":
+            logger.info(f"在与 '{who}' 的私聊中检测到精确指令 '拍一拍我'，准备执行拍一拍。")
+            # 在私聊中，聊天对象(who)就是我们要拍的目标(who)
+            pat_thread = threading.Thread(target=pat_pat_user_threaded, args=(who, who))
+            pat_thread.start()
+            return # 指令已处理，直接返回，不再进行后续AI回复
+
+    else:
+        # **群聊逻辑**: 保持原有的关键词触发方式
         pat_match = re.search(r'测试654321\s*@?(.+)', original_content.strip())
         if pat_match:
             target_name = pat_match.group(1).strip()
@@ -1576,6 +1583,8 @@ def message_listener(msg, chat):
             pat_thread = threading.Thread(target=pat_pat_user_threaded, args=(who, target_name))
             pat_thread.start()
             return # 处理完成，直接返回
+            
+
     ##### 新增：拍一拍功能逻辑 结束 #####
 
     ##### 新增：特殊艾特功能逻辑 开始 #####
