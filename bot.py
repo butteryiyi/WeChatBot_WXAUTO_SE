@@ -2216,27 +2216,52 @@ def send_reply(user_id, sender_name, username, original_merged_message, reply, g
         item_content = item['content']
         
         if item_type == 'action':
-            # 标准流程中的动作处理
-            if item_content.strip() == '[拍一拍对方]':
-                 # 此处逻辑不变，仅限私聊
+            content_stripped = item_content.strip()
+
+            # 优先级 1: 精确匹配特殊指令
+            if content_stripped == '[拍一拍对方]':
                 if not is_group:
                     logger.info(f"执行[拍一拍对方]指令，目标: {username}...")
                     pat_thread = threading.Thread(target=pat_pat_user_threaded, args=(username, username))
                     pat_thread.start()
                     pat_thread.join(timeout=15)
+                # 处理完毕，跳过后续所有表情逻辑
                 continue
 
-            match = re.match(r'\[(.*?)\]', item_content)
-            tag = match.group(1) if match else ''
-
-            if tag and tag in valid_emoji_tags and len(tag) <= EMOJI_TAG_MAX_LENGTH:
-                emoji_path = send_emoji(tag)
-                if emoji_path:
-                    wx.SendFiles(filepath=emoji_path, who=user_id)
-                    time.sleep(EMOJI_SEND_INTERVAL)
-            else:
-                wx.SendMsg(msg=item_content, who=user_id)
-                time.sleep(TEXT_SEND_INTERVAL)
+            # 优先级 2: 处理所有其他 [...] 格式的标签
+            match = re.match(r'\[(.*?)\]', content_stripped)
+            if match:
+                tag = match.group(1)
+                tag_len = len(tag)
+                
+                # 条件A: 检查是否为【可发送的有效表情】(存在且长度不超限)
+                is_valid_sendable_emoji = (
+                    tag 
+                    and tag in valid_emoji_tags 
+                    and tag_len <= EMOJI_TAG_MAX_LENGTH
+                )
+                
+                if is_valid_sendable_emoji:
+                    # 作为表情图片发送
+                    logger.info(f"检测到有效表情标签: [{tag}]，准备发送图片...")
+                    emoji_path = send_emoji(tag)
+                    if emoji_path:
+                        wx.SendFiles(filepath=emoji_path, who=user_id)
+                        time.sleep(EMOJI_SEND_INTERVAL)
+                else:
+                    # 条件B: 表情无效或超长，根据长度决定处理方式
+                    if tag_len > EMOJI_TAG_MAX_LENGTH:
+                        # 长度超限，则作为普通文本发送
+                        logger.info(f"标签 [{tag}] 长度({tag_len})超过限制({EMOJI_TAG_MAX_LENGTH})，作为普通文本发送。")
+                        wx.SendMsg(msg=item_content, who=user_id)
+                        time.sleep(TEXT_SEND_INTERVAL)
+                    else:
+                        # 长度未超限但表情不存在，则直接忽略
+                        logger.warning(f"标签 [{tag}] 无效或不存在，且长度未超限，已过滤。")
+                        # 此处为空，不执行任何操作，即“废弃”
+            
+            # 无论如何，处理完一个 [...] 标签后都应跳过
+            continue
 
         elif item_type == 'text':
             # 标准流程中的文本发送
