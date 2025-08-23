@@ -743,10 +743,8 @@ def get_deepseek_response(message, user_id, store_context=True, is_summary=False
         return reply # 直接返回 'reply'，它可能是AI的回复，也可能是空字符串""
 
     except Exception as e:
-        # 这个 except 块现在只处理真正的、未被捕获的异常
-        logger.error(f"在 get_deepseek_response 中发生严重错误 (ID: {user_id}): {str(e)}", exc_info=True)
-        # 向上抛出异常，而不是返回一个固定的错误字符串，这让上层可以更灵活地处理
-        raise e
+        logger.error(f"Chat 调用失败 (ID: {user_id}): {str(e)}", exc_info=True)
+        return "抱歉api报错"
 
 
 
@@ -838,7 +836,7 @@ def call_chat_api_with_retry(messages_to_send, user_id, max_retries=2, is_summar
 
     # 如果所有重试都因真实异常而失败，则抛出最后一次捕获的异常
     logger.critical(f"所有 ({max_retries + 1}) 次 API 调用尝试均因真实异常而失败 (用户: {user_id})。")
-    raise RuntimeError(f"API 在所有重试后均失败: {last_exception}") from last_exception
+    raise RuntimeError("抱歉api报错")
 
 
 
@@ -2160,8 +2158,13 @@ def check_inactive_users():
 
 # 在 bot.py 文件中找到此函数并用下面的代码完整替换
 
+# markdown代码块: python
+
 def process_user_messages(user_id):
-    """处理指定用户的消息队列，包括可能的联网搜索。"""
+    """
+    【已修改】处理指定用户的消息队列，包括可能的联网搜索。
+    新增逻辑：当AI返回空内容时，向用户发送一条友好的提示消息。
+    """
     global can_send_messages
 
     with queue_lock:
@@ -2180,10 +2183,10 @@ def process_user_messages(user_id):
     reply = None
     online_info = None
 
-    # [核心] 在函数开头就获取配置，以便后续所有流程都能使用
     group_config = get_group_chat_config(user_id)
 
     try:
+        # 联网搜索逻辑保持不变
         if ENABLE_ONLINE_API:
             search_content = needs_online_search(merged_message, user_id)
             if search_content:
@@ -2209,28 +2212,38 @@ def process_user_messages(user_id):
                     logger.warning(f"在线搜索未能获取有效信息，用户: {user_id}。将按常规流程处理。")
                     pass
 
+        # 如果没有经过联网搜索，或者联网搜索失败，则执行常规回复
         if reply is None:
             logger.info(f"为用户 {user_id} 执行常规回复（无联网信息）。")
             reply = get_deepseek_response(merged_message, user_id, store_context=True)
 
+        # --- ▼▼▼ 核心修改区域开始 ▼▼▼ ---
         if reply:
+            # 如果AI成功返回了非空内容，执行原有的清理和发送逻辑
             cleaned_reply = QINGLI_AI_BIAOQIAN_ZHUJIE.sub('', reply).strip()
             
             if "</think>" in cleaned_reply:
                 cleaned_reply = cleaned_reply.split("</think>", 1)[1].strip()
 
             if "## 记忆片段" not in cleaned_reply:
-                # [修正点] 确保 group_config 被正确传递
                 send_reply(user_id, sender_name, username, merged_message, cleaned_reply, group_config)
             else:
                 logger.info(f"回复包含记忆片段标记，已屏蔽发送给用户 {user_id}。")
         else:
-            logger.error(f"未能为用户 {user_id} 生成任何回复。")
+            # 【新增逻辑】如果AI返回了空字符串 "" 或 None，则执行这里的代码
+            logger.warning(f"API 为用户 {user_id} 返回了空内容或生成回复失败，将发送备用消息。")
+            
+            # 您可以自定义这条反馈消息
+            fallback_message = "抱歉，我刚刚大脑好像短路了一下，没想好怎么回复你..."
+            
+            # 使用 send_reply 函数发送这条备用消息，确保行为一致
+            # `original_merged_message` 参数现在用于日志记录，标记这次交互是因空回复而产生的
+            send_reply(user_id, sender_name, username, "[API空回复]", fallback_message, group_config)
+        # --- ▲▲▲ 核心修改区域结束 ▲▲▲ ---
 
     except TimeoutError:
         logger.error(f"处理用户 {user_id} 消息时因API响应超时（超过240秒），发送备用消息。")
         fallback_message = "抱歉，我现在真的很忙，稍后再聊吧。"
-        # [修正点] 在异常处理中也要确保 group_config 被正确传递
         send_reply(user_id, sender_name, username, "[API响应超时]", fallback_message, group_config)
             
     except Exception as e:
@@ -2240,7 +2253,6 @@ def process_user_messages(user_id):
         else:
             logger.error(f"用户消息处理失败 (用户: {user_id}): {str(e)}")
             raise
-
 
 
 def send_reply(user_id, sender_name, username, original_merged_message, reply, group_config=None):
@@ -2316,7 +2328,6 @@ def send_reply(user_id, sender_name, username, original_merged_message, reply, g
                     pat_thread = threading.Thread(target=pat_pat_user_threaded, args=(username, username))
                     pat_thread.start()
                     pat_thread.join(timeout=15)
-                # 处理完毕，跳过后续所有表情逻辑
                 continue
             
             # 新增：处理“拍一拍自己”的指令
@@ -2324,7 +2335,7 @@ def send_reply(user_id, sender_name, username, original_merged_message, reply, g
                 logger.info(f"执行[拍一拍自己]指令，在聊天 '{username}' 中操作...")
                 pat_self_thread = threading.Thread(target=pat_myself_threaded, args=(username,))
                 pat_self_thread.start()
-                # 处理完毕，跳过后续所有表情逻辑
+                pat_self_thread.join(timeout=15)
                 continue
             
             # 优先级 2: 处理所有其他 [...] 格式的标签
