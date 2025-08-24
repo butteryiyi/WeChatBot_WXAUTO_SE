@@ -6,6 +6,7 @@ import logging
 from datetime import datetime
 import datetime as dt
 import threading
+from wxauto import WeChat, uia
 import uiautomation as auto
 import time
 from wxautox_wechatbot import WeChat
@@ -60,7 +61,7 @@ MEMORY_SUMMARIES_DIR = "Memory_Summaries" # 存储用户记忆总结的目录
 active_summary_tasks = set()
 active_summary_tasks_lock = threading.Lock()
 
-
+logger = logging.getLogger(__name__)
 # --- 动态设置相关全局变量 ---（新增部分）                            
 SETTINGS_FILE = "settings.json"  # 存储动态设置的配置文件名
 EMOJI_TAG_MAX_LENGTH = 10  # 默认值，如果配置文件不存在或读取失败时使用
@@ -384,6 +385,8 @@ emoji_timer = None
 emoji_timer_lock = threading.Lock()
 # 全局变量，控制消息发送状态
 can_send_messages = True
+last_sent_messages = {}
+last_sent_messages_lock = threading.Lock()
 
 # --- 定时重启相关全局变量 ---
 program_start_time = 0.0 # 程序启动时间戳
@@ -1248,7 +1251,148 @@ def pat_myself_threaded(chat_name: str):
             chat_window_control.SetTopmost(False)
         logger.debug(f"[拍自己任务] 任务结束，资源已释放。")
 
-# ==================== 拍一拍功能区 结束 ====================
+def normalize_for_robust_comparison(text: str) -> str:
+    """
+    """
+    if not text:
+        return ""
+    # [^\w] 匹配任何非字母、非数字、非下划线的字符，也就是所有标点和空格
+    return re.sub(r'[^\w]', '', str(text))
+
+
+def normalize_for_robust_comparison(text: str) -> str:
+    """
+    【辅助函数】
+    为实现极其稳健的UI文本匹配，此函数执行以下操作：
+    1. 移除所有标点符号 (如 . , ? ! ？。，！)
+    2. 移除所有空白字符 (如 空格, 换行符, 制表符)
+    例如：'说来听听？' -> '说来听听'
+          '承认得这么快。' -> '承认得这么快'
+    这样可以确保即使UI元素的Name属性缺少标点，也能100%匹配成功。
+    """
+    if not text:
+        return ""
+    # [^\w] 匹配任何非字母、非数字、非下划线的字符，也就是所有标点和空格
+    # 同时处理中日韩字符
+    pattern = re.compile(r'[^\w\u4e00-\u9fa5\u3040-\u309F\u30A0-\u30FF]+')
+    return pattern.sub('', str(text))
+
+
+
+def recall_message_by_index_final_version(chat_name: str, index: int = 1):
+    """
+    在一个新的线程中，通过“最终版纯文本定位”方式执行消息撤回。
+    [V-Fix-20250824-D - 终极修复+用户校准：严格按照用户指定的键盘操作(UP*2)作为B计划]
+    """
+    chat_window_control = None
+    try:
+        logger.info(f"[最终撤回任务] 子线程启动：准备在聊天 '{chat_name}' 中撤回倒数第 {index} 条消息。")
+
+        # --- 1. 逻辑层：获取目标消息内容 (此部分逻辑不变) ---
+        with last_sent_messages_lock:
+            sent_messages = [msg for msg in last_sent_messages.get(chat_name, []) if msg.get('content')]
+        
+        if len(sent_messages) < index:
+            wx.SendMsg(chat_name, f"我最近没说那么多话呀，找不到倒数第 {index} 条消息给你撤回了。")
+            return
+
+        target_message_info = sent_messages[-index]
+        content_to_recall = target_message_info['content']
+        time_since_sent = time.time() - target_message_info['timestamp']
+
+        if time_since_sent > 120:
+            wx.SendMsg(chat_name, f"这条消息（“{content_to_recall[:15]}...”）已经发送超过2分钟啦，没办法撤回了哦。")
+            return
+        
+        normalized_target_text = normalize_for_robust_comparison(content_to_recall)
+        logger.info(f"[最终撤回任务] 逻辑校验通过，净化后的目标文本: '{normalized_target_text}'")
+
+        # --- 2. UI层：切换并获取窗口 (此部分逻辑不变) ---
+        wx.ChatWith(chat_name)
+        time.sleep(0.5)
+        chat_window_control = uia.WindowControl(Name=chat_name, searchDepth=1)
+        
+        if not chat_window_control.Exists(3):
+            logger.error(f"[最终撤回任务] UI失败：无法找到名为 '{chat_name}' 的聊天窗口。")
+            wx.SendMsg(chat_name, "糟糕，我好像找不到我们的聊天窗口了，撤回失败。")
+            return
+
+        chat_window_control.SwitchToThisWindow()
+        time.sleep(0.5) 
+
+        message_list = chat_window_control.ListControl(Name='消息')
+        target_message_item = None
+        
+        all_children = message_list.GetChildren()
+        logger.info(f"[最终撤回任务] 开始UI搜索 (共 {len(all_children)} 个元素)...")
+        
+        for item in reversed(all_children):
+            if item.ControlTypeName == 'ListItemControl' and item.Name and (normalized_target_text in normalize_for_robust_comparison(item.Name)):
+                logger.info(f"🎉 [最终撤回任务] 定位成功！UI气泡: '{item.Name[:30]}...'")
+                target_message_item = item
+                break
+
+        if not target_message_item:
+            logger.error(f"[最终撤回任务] UI失败：遍历完所有可见消息气泡，仍未能找到目标内容。")
+            wx.SendMsg(chat_name, "奇怪，我在聊天记录里找不到那条消息了，可能被刷得太远了...")
+            return
+            
+        # --- 3. 执行层：【【【终极错误修正 - 结合用户校准】】】 ---
+        
+        # 先执行右键点击，弹出菜单
+        rect = target_message_item.BoundingRectangle
+        pyautogui.rightClick(x=rect.left + rect.width() // 2, y=rect.top + rect.height() // 2)
+        time.sleep(0.5) # 等待菜单弹出
+
+        # A计划: 智能识别 "撤回" 菜单项 (最可靠)
+        action_completed = False
+        logger.info("[最终撤回任务 - A计划] 尝试通过控件名称精准定位'撤回'...")
+        menu = uia.MenuControl() # 自动查找当前活动的菜单
+        if menu.Exists(1):
+            recall_item = menu.MenuItemControl(Name='撤回')
+            if recall_item.Exists(0.5):
+                logger.info("[最终撤回任务 - A计划] 成功！已识别到'撤回'项，准备点击。")
+                recall_item.Click()
+                action_completed = True
+            else:
+                logger.warning("[最终撤回任务 - A计划] 失败：未能找到名为'撤回'的菜单项。")
+        else:
+            logger.warning("[最终撤回任务 - A计划] 失败：未能定位到右键菜单容器。")
+
+        # B计划: 如果A计划失败，则启用用户校准后的键盘操作作为备用方案
+        if not action_completed:
+            logger.info("[最终撤回任务 - B计划] A计划失败，启动备用方案：模拟键盘操作！")
+            
+            # 【【【核心修正】】】严格按照用户指定的「两次UP」操作执行
+            logger.info("[最终撤回任务 - B计划] 正在发送键盘指令: [Up] -> [Up] -> [Enter]")
+            pyautogui.press('up') 
+            time.sleep(0.15)
+            pyautogui.press('up') 
+            time.sleep(0.15)
+            pyautogui.press('enter')
+            action_completed = True
+
+        # --- 4. 清理工作 ---
+        with last_sent_messages_lock:
+            if chat_name in last_sent_messages and target_message_info in last_sent_messages[chat_name]:
+                last_sent_messages[chat_name].remove(target_message_info)
+                logger.info(f"[最终撤回任务] 已从可撤回逻辑列表中移除消息记录。")
+
+        logger.info(f"🎉🎉🎉 [最终撤回任务] 任务圆满成功！🎉🎉🎉")
+
+    except Exception as e:
+        logger.error(f"[最终撤回任务] 执行时发生未知严重错误", exc_info=True)
+        if chat_name:
+            try:
+                wx.SendMsg(chat_name, "抱歉，执行撤回操作时遇到了一个内部错误。")
+            except Exception as send_err:
+                logger.error(f"尝试发送最终错误消息也失败了: {send_err}")
+    finally:
+        if chat_window_control and chat_window_control.Exists(0, 0):
+             chat_window_control.SetTopmost(False)
+
+
+
 
 # ==================== 特殊艾特功能区 开始 (主动聚焦终版) ====================
 def special_at_user_threaded(chat_name: str, target_user_name: str):
@@ -1439,24 +1583,14 @@ def initiate_voice_call_threaded(target_user):
 
 def message_listener(msg, chat):
     global can_send_messages
-        # --- START: 新增代码：处理消息撤回事件 ---
     who = chat.who
     sender = msg.sender
     original_content = msg.content
-    
-    # 检查是否是系统发出的、关于消息撤回的提示
-    # 根据日志，这类消息的发送者(sender)是'system'
     if sender == 'system' and '撤回了一条消息' in original_content:
-        # 判断是否为私聊。在私聊中，'who'就是对方的昵称。
-        # 此功能目前仅针对私聊，避免在群聊中对所有人的撤回都做出反应。
         is_group_chat = is_user_group_chat(who)
         if not is_group_chat:
             logger.info(f"检测到用户 '{who}' 撤回了一条消息。")
-            
-            # 构建一个特殊的内部指令，用于触发AI进行特定回复
             recall_trigger_content = "[用户操作: 撤回了一条消息]"
-            
-            # 将这个特殊指令像普通消息一样放入处理队列
             with queue_lock:
                 current_time_str = datetime.now().strftime("%Y-%m-%d %A %H:%M:%S")
                 content_with_time = f"[{current_time_str}] {recall_trigger_content}"
@@ -1472,38 +1606,20 @@ def message_listener(msg, chat):
                     user_queues[who]['last_message_time'] = time.time()
                 
                 logger.info(f"已为用户 '{who}' 加入撤回消息触发指令到队列。")
-            return  # 处理完毕，结束本次函数执行，避免后续代码处理这条系统消息
-    # --- END: 新增代码 ---
-    
-    # a.k.a 原函数的其他部分从这里开始
-    # who = chat.who # 这行可以删掉，因为上面已经定义了
+            return  
     msgtype = msg.type
-    # original_content = msg.content # 这行也可以删掉
-    # sender = msg.sender # 这行也可以删掉
     msgattr = msg.attr
-    # ==================== 新增：拍一拍事件感知功能 开始 (V2版-群聊优化) ====================
-    # 检查是否是拍一拍相关的系统消息
     if msgattr == 'tickle':
-        # 1. 忽略机器人自己发起的动作，防止无限循环
         if '我拍了拍自己' in original_content or '我拍了拍' in original_content:
             logger.info(f"检测到机器人自己发起的拍一拍事件，已忽略。内容: '{original_content}'")
             return
-
-        # 2. 【核心修改】增加对群聊的特殊判断
         is_group = is_user_group_chat(who)
         if is_group:
-            # 如果是群聊，只在机器人“被拍”时才响应
             if "拍了拍我" not in original_content:
                 logger.info(f"在群聊 '{who}' 中检测到用户间互相拍，与机器人无关，已忽略。")
                 return # 关键：直接返回，不处理这条消息
-
-        # 3. 如果通过了以上所有过滤，说明是需要处理的拍一拍事件
         logger.info(f"✅ 成功检测到需要处理的拍一拍事件，来自 '{who}'，内容: '{original_content}'")
-        
-        # 将这个动作转换为给AI的文本提示
         pat_trigger_content = f"[这是一个拍一拍的互动通知，内容是：'{original_content}']"
-        
-        # 将消息放入队列，让AI处理
         with queue_lock:
             current_time_str = datetime.now().strftime("%Y-%m-%d %A %H:%M:%S")
             content_with_time = f"[{current_time_str}] {pat_trigger_content}"
@@ -1511,17 +1627,12 @@ def message_listener(msg, chat):
                 user_queues[who] = {'messages': [content_with_time], 'sender_name': who, 'username': who, 'last_message_time': time.time()}
             else:
                 user_queues[who]['messages'].append(content_with_time)
-                user_queues[who]['last_message_time'] = time.time()
-        
+                user_queues[who]['last_message_time'] = time.time()       
         logger.info(f"已为用户 '{who}' 加入“拍一拍”触发指令到队列。")
-        return # 处理完毕，直接返回
-        # ==================== 新增：过滤手打的“拍一拍”文本消息 开始 ====================
+        return 
     if isinstance(original_content, str) and (original_content.strip().startswith('我拍了拍') or original_content.strip().startswith('你拍了拍')):
         logger.info(f"检测到手打的“拍一拍”格式文本消息，已忽略。内容：'{original_content}'")
-        return # 忽略这条消息，不交给AI
-    # ==================== 新增：过滤手打的“拍一拍”文本消息 结束 ====================
-
-    # ==================== 新增：拍一拍事件感知功能 结束 (V2版-群聊优化) ====================
+        return 
     logger.info(f'收到来自聊天窗口 "{who}" 中用户 "{sender}" 的原始消息 (类型: {msgtype}, 属性: {msgattr}): {original_content[:100]}')
     who = chat.who 
     msgtype = msg.type
@@ -1554,25 +1665,18 @@ def message_listener(msg, chat):
         logger.info(f"收到合并转发消息，开始处理")
         mergecontent = msg.get_messages()
         logger.info(f"收到合并转发消息，处理完成")
-        # mergecontent 是一个列表，每个元素是 [发送者, 内容, 时间]
-        # 转换为多行文本，每行格式: [时间] 发送者: 内容
         if isinstance(mergecontent, list):
             merged_text_lines = []
             for item in mergecontent:
                 if isinstance(item, list) and len(item) == 3:
                     sender, content, timestamp = item
-                    # 修改这里的判断逻辑，正确处理WindowsPath对象
-                    # 检查是否为WindowsPath对象
                     if hasattr(content, 'suffix') and str(content.suffix).lower() in ('.png', '.jpg', '.jpeg', '.gif', '.bmp'):
-                        # 是WindowsPath对象且是图片
                         if ENABLE_IMAGE_RECOGNITION:
                             try:
                                 logger.info(f"开始识别图片: {str(content)}")
                                 # 将WindowsPath对象转换为字符串
                                 image_path = str(content)
-                                # 保存当前状态
                                 original_can_send_messages = can_send_messages
-                                # 处理图片
                                 content = recognize_image_with_moonshot(image_path, is_emoji=False)
                                 if content:
                                     logger.info(f"图片识别成功: {content}")
@@ -1588,7 +1692,6 @@ def message_listener(msg, chat):
                                 can_send_messages = True
                         else:
                             content = "[图片]"
-                    # 处理字符串路径的判断 (兼容性保留)
                     elif isinstance(content, str) and content.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', 'bmp')):
                         if ENABLE_IMAGE_RECOGNITION:
                             try:
@@ -1618,74 +1721,84 @@ def message_listener(msg, chat):
             original_content = f"[合并转发消息]:\n{merged_text}"
         else:
             original_content = f"[合并转发消息]: {mergecontent}"
-    
-    # 在处理完所有消息类型后检查内容是否为空
     if not original_content:
         logger.info("消息内容为空，已忽略。")
         return
-    
-    # 确保后续处理的是字符串
     original_content = str(original_content)
+# 消息主动撤回
+    who = chat.who
+    sender = msg.sender
+    original_content = msg.content
 
-    # ==================== 语音通话请求处理 (多线程版) ====================
+    # 忽略机器人自己的消息，防止命令循环
+    if sender == ROBOT_WX_NAME:
+        logger.debug(f"消息来自机器人自己({sender})，已忽略。")
+        return
+
+    # 正则表达式，匹配 "撤回"、"撤回上一条"、"撤回第N条" 等指令
+    # - `(?:撤回|recall)`: 匹配 "撤回" 或 "recall"
+    # - `(?:\s*上一条)?`: 可选地匹配 " 上一条"
+    # - `(?:\s*第(\d+)[条支])?`: 可选地匹配 " 第N条" 或 " 第N支"，并捕获数字 N
+    recall_pattern = r'^(?:撤回|recall)(?:\s*上一条)?(?:\s*第(\d+)[条支])?$'
+    recall_match = re.search(recall_pattern, original_content.strip(), re.IGNORECASE)
+
+    if recall_match:
+        # 提取捕获组中的数字。如果没匹配到数字（例如，指令是"撤回"），则group(1)为None
+        index_str = recall_match.group(1)
+        
+        # 决定撤回的索引。如果指令是"撤回"或"撤回上一条"，则默认为1。否则使用提取的数字。
+        target_index = int(index_str) if index_str else 1
+        
+        logger.info(f"在聊天 '{who}' 中检测到【索引撤回】指令，目标索引: {target_index}")
+        
+        # 创建并启动新的、基于索引的撤回线程
+        recall_thread = threading.Thread(target=recall_message_by_index_final_version, args=(who, target_index))
+        recall_thread.start()
+        
+        # 指令已处理，直接返回，不再交给AI
+        return
+ 
+#语音通话请求处理
     voice_call_keywords = ["语音通话", "给我打电话"]
     if any(keyword in original_content for keyword in voice_call_keywords):
         logger.info(f"用户 {who} 请求语音通话，准备在新线程中发起呼叫。")
-        # 创建并启动一个新的线程来处理通话，避免阻塞
         call_thread = threading.Thread(target=initiate_voice_call_threaded, args=(who,))
         call_thread.start()
-        # 主线程直接返回，不再等待
         return
-    # =================================================================
-    ##### 新增：拍一拍功能逻辑 开始 #####
+# 拍一拍
     is_group_chat_for_pat = is_user_group_chat(who) # 先判断一次是否群聊
-
-    # 根据聊天类型（私聊或群聊）执行不同的拍一拍逻辑
     if not is_group_chat_for_pat:
-        # **私聊逻辑**: 精确匹配 "拍一拍我"
         if original_content == "拍一拍我":
             logger.info(f"在与 '{who}' 的私聊中检测到精确指令 '拍一拍我'，准备执行拍一拍。")
-            # 在私聊中，聊天对象(who)就是我们要拍的目标(who)
             pat_thread = threading.Thread(target=pat_pat_user_threaded, args=(who, who))
             pat_thread.start()
-            return # 指令已处理，直接返回，不再进行后续AI回复
-
+            return 
     else:
-        # **群聊逻辑**: 保持原有的关键词触发方式
         pat_match = re.search(r'测试654321\s*@?(.+)', original_content.strip())
         if pat_match:
             target_name = pat_match.group(1).strip()
             logger.info(f"在群聊 '{who}' 中检测到拍一拍请求，目标: '{target_name}'。")
             pat_thread = threading.Thread(target=pat_pat_user_threaded, args=(who, target_name))
             pat_thread.start()
-            return # 处理完成，直接返回
+            return
             
-
-    ##### 新增：拍一拍功能逻辑 结束 #####
-
-    ##### 新增：特殊艾特功能逻辑 开始 #####
-    if is_group_chat_for_pat: # 重用之前计算的群聊判断结果
-        # 使用正则表达式匹配 "艾特 XXX" (也支持英文 "at XXX")
+#特殊艾特功能逻辑
+    if is_group_chat_for_pat:
         at_match = re.search(r'(?:测试123456)\s*(.+)', original_content.strip(), re.IGNORECASE)
         if at_match:
             target_name = at_match.group(1).strip()
-            # 对提取的目标名进行简单过滤，防止空或过长的名字
             if not target_name or len(target_name) > 50:
                  logger.warning(f"检测到无效的特殊艾特目标: '{target_name}'，已忽略。")
             else:
                 logger.info(f"在群聊 '{who}' 中检测到特殊艾特请求，目标: '{target_name}'。")
-                # 创建并启动新线程来执行UI自动化操作，避免阻塞
                 at_thread = threading.Thread(target=special_at_user_threaded, args=(who, target_name))
                 at_thread.start()
-                return # 命令已处理，直接返回，不再进行后续的AI聊天处理
-    ##### 新增：特殊艾特功能逻辑 结束 #####
-
+                return 
     should_process_this_message = False
     content_for_handler = original_content 
-
     is_group_chat = is_user_group_chat(who)
 
-    # === 新增：获取群聊专属配置 ===
+#获取群聊专属配置
     group_cfg = get_group_chat_config(who) if is_group_chat else {}
 
     if not is_group_chat: 
@@ -1700,12 +1813,10 @@ def message_listener(msg, chat):
         keyword_triggered = False
 
         if not group_cfg.get('ACCEPT_ALL_GROUP_CHAT_MESSAGES', False) and group_cfg.get('ENABLE_GROUP_AT_REPLY', True) and ROBOT_WX_NAME:
-            temp_content_after_at_check = processed_group_content
-            
+            temp_content_after_at_check = processed_group_content           
             unicode_at_pattern = f'@{re.escape(ROBOT_WX_NAME)}\u2005'
             space_at_pattern = f'@{re.escape(ROBOT_WX_NAME)} '
-            exact_at_string = f'@{re.escape(ROBOT_WX_NAME)}'
-            
+            exact_at_string = f'@{re.escape(ROBOT_WX_NAME)}'           
             if re.search(unicode_at_pattern, processed_group_content):
                 at_triggered = True
                 temp_content_after_at_check = re.sub(unicode_at_pattern, '', processed_group_content, 1).strip()
@@ -1714,31 +1825,22 @@ def message_listener(msg, chat):
                 temp_content_after_at_check = re.sub(space_at_pattern, '', processed_group_content, 1).strip()
             elif processed_group_content.strip() == exact_at_string:
                 at_triggered = True
-                temp_content_after_at_check = ''
-                
+                temp_content_after_at_check = ''               
             if at_triggered:
                 logger.info(f"群聊 '{who}' 中检测到 @机器人。")
                 processed_group_content = temp_content_after_at_check
         if group_cfg.get('ENABLE_GROUP_KEYWORD_REPLY', False):
-            # 从配置中获取关键词，它可能是字符串或列表
             keywords_config = group_cfg.get('GROUP_KEYWORD_LIST', [])
             keyword_list = []
             if isinstance(keywords_config, str):
-                # 如果是字符串 "小狗,柯基"，则分割成列表 ['小狗', '柯基']
                 normalized_value = re.sub(r'，|\s+', ',', keywords_config)
                 keyword_list = [kw.strip() for kw in normalized_value.split(',') if kw.strip()]
             elif isinstance(keywords_config, list):
-                # 如果本身就是列表，直接使用
                 keyword_list = keywords_config
-
-            # 使用修正后的 keyword_list 进行判断
             if any(keyword in processed_group_content for keyword in keyword_list):
                 keyword_triggered = True
-                logger.info(f"群聊 '{who}' 中检测到关键词。")
-
-        
+                logger.info(f"群聊 '{who}' 中检测到关键词。")       
         basic_trigger_met = group_cfg.get('ACCEPT_ALL_GROUP_CHAT_MESSAGES', False) or at_triggered or keyword_triggered
-
         if basic_trigger_met:
             if not group_cfg.get('ACCEPT_ALL_GROUP_CHAT_MESSAGES', False):
                 if at_triggered and keyword_triggered:
@@ -1749,7 +1851,6 @@ def message_listener(msg, chat):
                     logger.info(f"群聊 '{who}' 消息因关键词触发基本处理条件。")
             else:
                 logger.info(f"群聊 '{who}' 消息符合全局接收条件，触发基本处理条件。")
-
             if keyword_triggered and group_cfg.get('GROUP_KEYWORD_REPLY_IGNORE_PROBABILITY', False):
                 should_process_this_message = True
                 logger.info(f"群聊 '{who}' 消息因触发关键词且配置为忽略回复概率，将进行处理。")
@@ -1761,17 +1862,14 @@ def message_listener(msg, chat):
                 logger.info(f"群聊 '{who}' 消息满足基本触发条件，但未通过总回复概率 {group_cfg.get('GROUP_CHAT_RESPONSE_PROBABILITY', 100)}%，将忽略。")
         else:
             should_process_this_message = False
-            logger.info(f"群聊 '{who}' 消息 (发送者: {sender}) 未满足任何基本触发条件（全局、@、关键词），将忽略。")
-        
+            logger.info(f"群聊 '{who}' 消息 (发送者: {sender}) 未满足任何基本触发条件（全局、@、关键词），将忽略。")       
         if should_process_this_message:
             if not msgtype == 'image':
                 content_for_handler = f"[群聊消息-来自群'{who}'-发送者:{sender}]:{processed_group_content}"
             else:
-                content_for_handler = processed_group_content
-            
+                content_for_handler = processed_group_content        
             if not content_for_handler and at_triggered and not keyword_triggered: 
-                logger.info(f"群聊 '{who}' 中单独 @机器人，处理后内容为空，仍将传递给后续处理器。")
-    
+                logger.info(f"群聊 '{who}' 中单独 @机器人，处理后内容为空，仍将传递给后续处理器。")   
     if should_process_this_message:
         msg.content = content_for_handler 
         logger.info(f'最终准备处理消息 from chat "{who}" by sender "{sender}": {str(msg.content)[:100]}')
@@ -1780,28 +1878,18 @@ def message_listener(msg, chat):
         else:
             is_animation_emoji_in_original = False
         if is_animation_emoji_in_original and ENABLE_EMOJI_RECOGNITION:
-            # 【核心修正】在这里把 sender 传递过去
             handle_emoji_message(msg, who, sender)
         else:
             handle_wxauto_message(msg, who, sender)
 
 
-#  用下面这个函数，完整替换你原来的 recognize_image_with_moonshot 函数
 def recognize_image_with_moonshot(image_path, is_emoji=False):
     global can_send_messages, can_send_messages_lock
-
-    # 1. 在函数开始时，立刻锁住状态，防止其他消息处理流程进来
     with can_send_messages_lock:
         can_send_messages = False
-    
-    # 2. 使用一个 try...finally 结构。finally 块里的代码无论如何都会被执行
     try:
-        # --- 核心识别逻辑 ---
-        
-        # 读取图片内容并编码
         with open(image_path, 'rb') as img_file:
-            image_content = base64.b64encode(img_file.read()).decode('utf-8')
-            
+            image_content = base64.b64encode(img_file.read()).decode('utf-8')           
         headers = {
             'Authorization': f'Bearer {MOONSHOT_API_KEY}',
             'Content-Type': 'application/json'
@@ -1822,44 +1910,31 @@ def recognize_image_with_moonshot(image_path, is_emoji=False):
         }
         
         url = f"{MOONSHOT_BASE_URL}/chat/completions"
-        
-        # 3. <--- 关键修改点：缩短超时时间
-        # 将超时从30秒缩短到30秒，如果网络不好15秒都没反应，就直接放弃
         response = requests.post(url, headers=headers, json=data, timeout=30)
-        response.raise_for_status() # 检查HTTP错误
-        
+        response.raise_for_status()       
         result = response.json()
-        recognized_text = result['choices'][0]['message']['content']
-        
+        recognized_text = result['choices'][0]['message']['content']      
         if is_emoji:
             if "最后一张表情包" in recognized_text:
                 recognized_text = recognized_text.split("最后一张表情包", 1)[1].strip()
             recognized_text = "发送了表情包：" + recognized_text
         else:
-            recognized_text = "发送了图片：" + recognized_text
-            
+            recognized_text = "发送了图片：" + recognized_text            
         logger.info(f"AI图片识别成功: {recognized_text}")
-        return recognized_text # 成功时返回识别结果
+        return recognized_text 
 
-    # 4. <--- 关键修改点：专门处理超时异常
     except requests.exceptions.Timeout:
         logger.error(f"调用AI识别图片超时 (30秒): {image_path}")
-        return "[图片识别超时]" # 返回一个明确的提示，而不是空字符串
+        return "[图片识别超时]" 
 
-    # 5. <--- 关键修改点：统一处理所有其他异常
     except Exception as e:
         logger.error(f"调用AI识别图片失败: {str(e)}", exc_info=True)
-        return "[图片识别失败]" # 返回一个明确的提示，而不是空字符串
+        return "[图片识别失败]" 
         
-    # 6. <--- 关键修改点：使用finally保证锁一定被释放
     finally:
-        # 无论 try 块是成功返回、还是中途发生任何异常，finally 块的代码都【保证】会被执行
         with can_send_messages_lock:
             can_send_messages = True
         logger.info(f"图片识别流程结束，can_send_messages 全局锁已恢复为 True。")
-        
-        # 清理临时文件的逻辑也放在这里最安全
-        # (原代码的清理逻辑是正确的，我们只是把它移到更安全的位置)
         if is_emoji and os.path.exists(image_path):
             try:
                 os.remove(image_path)
@@ -1869,14 +1944,13 @@ def recognize_image_with_moonshot(image_path, is_emoji=False):
 
 
 
-def handle_emoji_message(msg, who, sender): # <--- 增加了 sender 参数
+def handle_emoji_message(msg, who, sender): 
     global emoji_timer
     global can_send_messages
     with can_send_messages_lock:
         can_send_messages = False
     def timer_callback():
         with emoji_timer_lock:
-            # 【核心修正】在这里把 sender 传递下去
             handle_wxauto_message(msg, who, sender)
             global emoji_timer
             emoji_timer = None
@@ -1899,7 +1973,6 @@ def fetch_and_extract_text(url: str) -> Optional[str]:
         Optional[str]: 提取并清理后的网页文本内容（限制了最大长度），如果失败则返回 None。
     """
     try:
-        # 基本 URL 格式验证 (非常基础)
         parsed_url = urlparse(url)
         if not all([parsed_url.scheme, parsed_url.netloc]):
              logger.warning(f"无效的URL格式，跳过抓取: {url}")
@@ -1908,20 +1981,15 @@ def fetch_and_extract_text(url: str) -> Optional[str]:
         headers = {'User-Agent': REQUESTS_USER_AGENT}
         logger.info(f"开始抓取链接内容: {url}")
         response = requests.get(url, headers=headers, timeout=REQUESTS_TIMEOUT, allow_redirects=True)
-        response.raise_for_status()  # 检查HTTP请求是否成功 (状态码 2xx)
+        response.raise_for_status()  
 
-        # 检查内容类型，避免处理非HTML内容（如图片、PDF等）
         content_type = response.headers.get('Content-Type', '').lower()
         if 'html' not in content_type:
             logger.warning(f"链接内容类型非HTML ({content_type})，跳过文本提取: {url}")
             return None
 
-        # 使用BeautifulSoup解析HTML
-        # 指定 lxml 解析器以获得更好的性能和兼容性
-        soup = BeautifulSoup(response.content, 'lxml') # 使用 response.content 获取字节流，让BS自动处理编码
+        soup = BeautifulSoup(response.content, 'lxml') 
 
-        # --- 文本提取策略 ---
-        # 尝试查找主要内容区域 (这部分可能需要根据常见网站结构调整优化)
         main_content_tags = ['article', 'main', '.main-content', '#content', '.post-content'] # 示例选择器
         main_text = ""
         for tag_selector in main_content_tags:
@@ -1930,14 +1998,11 @@ def fetch_and_extract_text(url: str) -> Optional[str]:
                 main_text = element.get_text(separator='\n', strip=True)
                 break # 找到一个就停止
 
-        # 如果没有找到特定的主要内容区域，则获取整个 body 的文本作为备选
         body_element = soup.find('body')
         if not main_text and body_element:
             main_text = body_element.get_text(separator='\n', strip=True)
         elif not main_text: # 如果连 body 都没有，则使用整个 soup
              main_text = soup.get_text(separator='\n', strip=True)
-
-        # 清理文本：移除过多空行
         lines = [line for line in main_text.splitlines() if line.strip()]
         cleaned_text = '\n'.join(lines)
 
@@ -1964,7 +2029,6 @@ def fetch_and_extract_text(url: str) -> Optional[str]:
         logger.error(f"处理链接时发生未知错误: {url}, 错误: {e}", exc_info=True)
         return None
 
-# 辅助函数：将用户消息记录到记忆日志 (如果启用)
 def log_user_message_to_memory(username, original_content):
     """将用户的原始消息记录到记忆日志文件。"""
     if ENABLE_MEMORY:
@@ -2255,6 +2319,8 @@ def process_user_messages(user_id):
             raise
 
 
+
+
 def send_reply(user_id, sender_name, username, original_merged_message, reply, group_config=None):
     """
     [V3 - 终版] 统一发送回复的函数，内置“真艾特”调用和标准消息分割逻辑。
@@ -2314,6 +2380,11 @@ def send_reply(user_id, sender_name, username, original_merged_message, reply, g
 
     valid_emoji_tags = {d for d in os.listdir(EMOJI_DIR) if os.path.isdir(os.path.join(EMOJI_DIR, d))} if os.path.exists(EMOJI_DIR) else set()
 
+    if final_send_queue:
+        with last_sent_messages_lock:
+            last_sent_messages[user_id] = []
+            logger.debug(f"为用户 '{user_id}' 的新回复清空了可撤回消息列表。")
+
     for item in final_send_queue:
         item_type = item['type']
         item_content = item['content']
@@ -2328,14 +2399,14 @@ def send_reply(user_id, sender_name, username, original_merged_message, reply, g
                     pat_thread = threading.Thread(target=pat_pat_user_threaded, args=(username, username))
                     pat_thread.start()
                     pat_thread.join(timeout=15)
+                # 处理完毕，跳过后续所有表情逻辑
                 continue
-            
-            # 新增：处理“拍一拍自己”的指令
+        
             elif content_stripped == '[拍一拍自己]':
                 logger.info(f"执行[拍一拍自己]指令，在聊天 '{username}' 中操作...")
                 pat_self_thread = threading.Thread(target=pat_myself_threaded, args=(username,))
                 pat_self_thread.start()
-                pat_self_thread.join(timeout=15)
+                # 处理完毕，跳过后续所有表情逻辑
                 continue
             
             # 优先级 2: 处理所有其他 [...] 格式的标签
@@ -2381,6 +2452,14 @@ def send_reply(user_id, sender_name, username, original_merged_message, reply, g
             
             if text_to_send:
                 wx.SendMsg(msg=text_to_send, who=user_id)
+                with last_sent_messages_lock:
+                    if user_id not in last_sent_messages or not isinstance(last_sent_messages[user_id], list):
+                            last_sent_messages[user_id] = []                
+                    last_sent_messages[user_id].append({
+                            'content': text_to_send,
+                            'timestamp': time.time()
+                    })
+                    logger.debug(f"已将发送给 '{user_id}' 的消息片段添加至可撤回列表: '{text_to_send[:30]}...'")                     
                 time.sleep(TEXT_SEND_INTERVAL)
 
 
@@ -4168,6 +4247,7 @@ def main():
         logger.info("程序退出。")
 
 if __name__ == '__main__':
+    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
     try:
         main()
     except KeyboardInterrupt:
