@@ -2724,31 +2724,63 @@ def send_reply(user_id, sender_name, username, original_merged_message, reply, g
             
             # 处理其他 [...] 标签，如表情包
             else:
-                match = re.match(r'\[(.*?)\]', content_stripped)
-                if match:
-                    tag = match.group(1)
-                    # 优先检查文件夹是否存在
-                    if tag and tag in valid_emoji_tags:
-                        logger.info(f"检测到有效表情标签: [{tag}] (文件夹存在)，准备发送图片...")
-                        emoji_path = send_emoji(tag)
-                        if emoji_path:
-                            wx.SendFiles(filepath=emoji_path, who=user_id)
-                            time.sleep(EMOJI_SEND_INTERVAL)
-                    # 如果文件夹不存在，再进行长度判断
-                    else:
-                        # 过滤无效的拍一拍叙述文本
-                        if '我拍了拍' in tag or '你拍了拍' in tag:
-                            logger.info(f"检测到不规范的拍一拍格式文本'[{tag}]'，已成功过滤。")
+                single_bracket_match = re.match(r'\[(.*?)\]', content_stripped)
+                if single_bracket_match:
+                    original_tag = single_bracket_match.group(1)
+                    # 移除所有空格、下划线、连接符
+                    normalized_tag = re.sub(r'[\s_-]', '', original_tag)
+
+                    # 2. 检查标签是否以'拍一拍'开头
+                    if normalized_tag.startswith('拍一拍'):
+                        target = normalized_tag[len('拍一拍'):].strip()
+                        logger.info(f"检测到灵活匹配的[拍一拍]指令。原始: '[{original_tag}]', 标准化后: '[{normalized_tag}]', 目标: '{target}'")
                         
-                        # 根据长度决定是过滤还是作为文本发送
-                        elif len(tag) <= EMOJI_TAG_MAX_LENGTH:
-                            logger.info(f"标签'[{tag}]'无效(文件夹不存在)且长度小于等于限制({EMOJI_TAG_MAX_LENGTH})，已按要求过滤。")
-                            # 不执行任何发送操作，即为过滤
-                        
+                        # 3. 执行相应的拍一拍动作
+                        if target == '自己':
+                            logger.info(f"执行灵活匹配的[拍一拍自己]指令...")
+                            pat_self_thread = threading.Thread(target=pat_myself_threaded, args=(user_id,))
+                            pat_self_thread.start()
+                            pat_self_thread.join(timeout=15)
+                        elif is_group and target and target != '对方':
+                            logger.info(f"执行灵活匹配的[拍一拍 {target}]指令...")
+                            pat_thread = threading.Thread(target=pat_pat_user_threaded, args=(user_id, target))
+                            pat_thread.start()
+                            pat_thread.join(timeout=15)
+                        # 如果是私聊，或者在群聊中目标是'对方'或为空（例如指令就是'[拍一拍]')
+                        elif not is_group or (is_group and (target == '对方' or not target)):
+                            logger.info(f"执行灵活匹配的[拍一拍对方]指令 (目标: '{sender_name}')...")
+                            pat_thread = threading.Thread(target=pat_pat_user_threaded, args=(user_id, sender_name))
+                            pat_thread.start()
+                            pat_thread.join(timeout=15)
                         else:
-                            logger.info(f"标签'[{tag}]'无效(文件夹不存在)但长度超过限制({EMOJI_TAG_MAX_LENGTH})，作为普通文本发送。")
-                            wx.SendMsg(msg=item_content, who=user_id)
-                            time.sleep(TEXT_SEND_INTERVAL)
+                            logger.warning(f"灵活匹配的拍一拍指令 '{content_stripped}' 无法执行，已忽略。")
+                    
+                    # 如果不是灵活的拍一拍指令，则执行原有的表情包和标签过滤逻辑
+                    else:
+                        tag = original_tag # 使用原始标签进行表情包文件夹匹配
+                        # 优先检查文件夹是否存在
+                        if tag and tag in valid_emoji_tags:
+                            logger.info(f"检测到有效表情标签: [{tag}] (文件夹存在)，准备发送图片...")
+                            emoji_path = send_emoji(tag)
+                            if emoji_path:
+                                wx.SendFiles(filepath=emoji_path, who=user_id)
+                                time.sleep(EMOJI_SEND_INTERVAL)
+
+                        # 如果文件夹不存在，再进行长度判断
+                        else:
+                            # 过滤无效的拍一拍叙述文本
+                            if '我拍了拍' in tag or '你拍了拍' in tag:
+                                logger.info(f"检测到不规范的拍一拍格式文本'[{tag}]'，已成功过滤。")
+                            
+                            # 根据长度决定是过滤还是作为文本发送
+                            elif len(tag) <= EMOJI_TAG_MAX_LENGTH:
+                                logger.info(f"标签'[{tag}]'无效(文件夹不存在)且长度小于等于限制({EMOJI_TAG_MAX_LENGTH})，已按要求过滤。")
+                                # 不执行任何发送操作，即为过滤
+                            
+                            else:
+                                logger.info(f"标签'[{tag}]'无效(文件夹不存在)但长度超过限制({EMOJI_TAG_MAX_LENGTH})，作为普通文本发送。")
+                                wx.SendMsg(msg=item_content, who=user_id)
+                                time.sleep(TEXT_SEND_INTERVAL)
 
         elif item_type == 'text':
             # --- 动态文本过滤器 ---
