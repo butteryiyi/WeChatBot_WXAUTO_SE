@@ -1,12 +1,47 @@
+# -*- coding: utf-8 -*-
+
+# ***********************************************************************
+# Modified based on the KouriChat project
+# Copyright of this modification: Copyright (C) 2025, iwyxdxl
+# Licensed under GNU GPL-3.0 or higher, see the LICENSE file for details.
+# 
+# This file is part of WeChatBot, which includes modifications to the KouriChat project.
+# The original KouriChat project's copyright and license information are preserved in the LICENSE file.
+# For any further details regarding the license, please refer to the LICENSE file.
+# 
+# ===============================================================================
+# 双记忆功能版本 - Dual Memory System
+# ===============================================================================
+# 
+# 本版本整合了言言双记忆版的核心功能，实现了双重记忆系统：
+# 
+# 1. 【日记系统】- 存储在 prompts/*.md 文件中
+#    - 记录每日与用户的重要互动和事件
+#    - 以时间线形式追加到角色设定文件末尾
+#    - 提供温馨、自然的记忆回顾体验
+# 
+# 2. 【核心记忆】- 存储在 Memory_Summaries/*.json 文件中  
+#    - 提取和保存用户的关键信息、偏好、约定等
+#    - 用于AI对话中的上下文理解和个性化回复
+#    - 支持迭代更新和智能压缩
+# 
+# 主要特性：
+# - get_user_prompt(): 同时加载角色设定+日记+核心记忆
+# - summarize_and_save(): 双输出格式，同时生成日记摘要和核心记忆
+# - append_to_memory_section(): 将日记内容追加到.md文件
+# - 兼容原有的单一记忆格式，平滑迁移
+# 
+# ***********************************************************************
 
 import sys
 import base64
 import requests
 import logging
+import string
+import command_handler # 程序指令中心
 from datetime import datetime
 import datetime as dt
 import threading
-from wxauto import WeChat, uia
 import uiautomation as auto
 import time
 from wxautox_wechatbot import WeChat
@@ -61,7 +96,7 @@ MEMORY_SUMMARIES_DIR = "Memory_Summaries" # 存储用户记忆总结的目录
 active_summary_tasks = set()
 active_summary_tasks_lock = threading.Lock()
 
-logger = logging.getLogger(__name__)
+
 # --- 动态设置相关全局变量 ---（新增部分）                            
 SETTINGS_FILE = "settings.json"  # 存储动态设置的配置文件名
 EMOJI_TAG_MAX_LENGTH = 10  # 默认值，如果配置文件不存在或读取失败时使用
@@ -353,7 +388,6 @@ async_http_handler = AsyncHTTPHandler(
 async_http_handler.setFormatter(formatter)
 async_http_handler.addFilter(NoSelfLoggingFilter())
 
-
 # 配置根Logger
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -366,7 +400,6 @@ logger.addHandler(async_http_handler)
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
-
 
 # 获取微信窗口对象
 try:
@@ -385,8 +418,6 @@ emoji_timer = None
 emoji_timer_lock = threading.Lock()
 # 全局变量，控制消息发送状态
 can_send_messages = True
-last_sent_messages = {}
-last_sent_messages_lock = threading.Lock()
 
 # --- 定时重启相关全局变量 ---
 program_start_time = 0.0 # 程序启动时间戳
@@ -569,19 +600,17 @@ def on_user_message(user):
         user_names.append(user)
     reset_user_timer(user)
 
-# 修改get_user_prompt函数
 def get_user_prompt(user_id):
     """
-    【新版】获取用户的完整提示词，包括基础角色设定和用户专属的核心记忆。
-    [兼容性修改] 新增对旧版列表格式核心记忆文件的读取支持。
+    【日记功能版】获取用户的完整提示词，组合"基础设定"、"【核心记忆】"和"【备忘录】"。
     """
-    # 1. 获取基础角色设定 (逻辑不变)
-    prompt_file = prompt_mapping.get(user_id, user_id)
-    prompt_path = os.path.join(root_dir, 'prompts', f'{prompt_file}.md')
+    # 1. 加载基础设定 (从 .md 文件，包含日记)
+    prompt_file_name = prompt_mapping.get(user_id, user_id)
+    prompt_path = os.path.join(root_dir, 'prompts', f'{prompt_file_name}.md')
     
     if not os.path.exists(prompt_path):
         logger.error(f"Prompt文件不存在: {prompt_path}")
-        raise FileNotFoundError(f"Prompt文件 {prompt_file}.md 未找到于 prompts 目录")
+        raise FileNotFoundError(f"Prompt文件 {prompt_file_name}.md 未找到于 prompts 目录")
 
     with open(prompt_path, 'r', encoding='utf-8') as file:
         prompt_content = file.read()
@@ -590,13 +619,13 @@ def get_user_prompt(user_id):
     if not UPLOAD_MEMORY_TO_AI:
         return prompt_content
 
-    # 3. [兼容性修改] 加载并注入核心记忆，支持新旧两种格式
+    # 3. 加载核心记忆 (从 .json 文件)
+    core_memory_content = ""
     try:
-        prompt_name = prompt_mapping.get(user_id, user_id)
-        
-        user_memory_file_new = os.path.join(root_dir, MEMORY_SUMMARIES_DIR, f'{user_id}_{prompt_name}.json')
+        # 兼容新旧两种文件名格式
+        user_memory_file_new = os.path.join(root_dir, MEMORY_SUMMARIES_DIR, f'{user_id}_{prompt_file_name}.json')
         user_memory_file_old = os.path.join(root_dir, MEMORY_SUMMARIES_DIR, f'{user_id}.json')
-
+        
         memory_file_to_load = None
         if os.path.exists(user_memory_file_new):
             memory_file_to_load = user_memory_file_new
@@ -607,27 +636,23 @@ def get_user_prompt(user_id):
             with open(memory_file_to_load, 'r', encoding='utf-8') as f:
                 memory_data = json.load(f)
             
-            core_memory_content = ""
-            # 判断是新格式 (dict) 还是旧格式 (list)
             if isinstance(memory_data, dict):
-                # 新格式，直接获取 content
                 core_memory_content = memory_data.get("content", "").strip()
             elif isinstance(memory_data, list):
-                # 旧格式，提取所有 summary 并合并
-                logger.info(f"检测到用户 {user_id} 的旧版列表格式核心记忆，将进行兼容性读取。")
                 all_summaries = [item.get("summary", "") for item in memory_data if item.get("summary")]
                 core_memory_content = "\n".join(all_summaries).strip()
-            
-            if core_memory_content:
-                logger.info(f"为用户 {user_id} 加载核心记忆: {core_memory_content[:50]}...")
-                prompt_content += f"\n\n## 核心记忆\n以下是你对该用户的核心记忆，请在对话中自然地利用这些信息：\n{core_memory_content}"
-    
-    except (json.JSONDecodeError, IOError) as e:
-        logger.error(f"为用户 {user_id} 加载记忆文件失败: {e}")
+
     except Exception as e:
-        logger.error(f"处理用户 {user_id} 的记忆时发生未知错误: {e}", exc_info=True)
+        logger.error(f"为用户 {user_id} 加载核心记忆 .json 文件失败: {e}")
         
-    return prompt_content
+    # 4. 组合最终的Prompt
+    final_prompt = prompt_content
+    
+    if core_memory_content:
+        final_prompt += f"\n\n## 【核心记忆】与【备忘录】\n以下是你对该用户的【核心记忆】和需要长期记住的【备忘录】，【核心记忆】和【备忘录】中的每一条记录，都等同于角色的核心记忆和行为准则。在生成任何回复之前，你必须**优先检索并严格遵守**所有【核心记忆】和【备忘录】中的内容。这些内容不是参考，而是必须执行的铁律。：\n{core_memory_content}"
+        logger.info(f"成功为用户 {user_id} 注入【核心记忆】与【备忘录】。")
+        
+    return final_prompt
 
              
 # 加载聊天上下文
@@ -678,77 +703,110 @@ def save_chat_contexts():
             except OSError:
                 pass # 忽略清理错误
 
-# markdown代码块: python
 def get_deepseek_response(message, user_id, store_context=True, is_summary=False):
     """
-    【已重构】从聊天API获取响应，依赖健壮的底层API调用。
-    现在能正确传递空字符串""或真实的异常。
+    从 DeepSeek API 获取响应，确保正确的上下文处理，并持久化上下文。
+
+    参数:
+        message (str): 用户的消息或系统提示词（用于工具调用）。
+        user_id (str): 用户或系统组件的标识符。
+        store_context (bool): 是否将此交互存储到聊天上下文中。
+                              对于工具调用（如解析或总结），设置为 False。
     """
     try:
+        # 每次调用都重新加载聊天上下文，以应对文件被外部修改的情况
         load_chat_contexts()
-        logger.info(f"准备 Chat API 调用 - ID: {user_id}, 存储上下文: {store_context}, 消息: {message[:100]}...")
+        
+        logger.info(f"调用 Chat API - ID: {user_id}, 是否存储上下文: {store_context}, 消息: {message[:100]}...") # 日志记录消息片段
 
-        # ... 您现有的、复杂的上下文管理逻辑完全保持不变 ...
-        # (从 messages_to_send = [] 到 save_chat_contexts() 之前的所有代码)
         messages_to_send = []
-        context_limit = MAX_GROUPS * 2
+        context_limit = MAX_GROUPS * 2  # 最大消息总数（不包括系统消息）
 
         if store_context:
+            # --- 2024-05-24: 分角色记忆 ---
+            # 1. 获取用户当前的角色(prompt)
             prompt_name = prompt_mapping.get(user_id, user_id)
+            
+            # 2. 获取该用户的系统提示词
             try:
                 user_prompt = get_user_prompt(user_id)
                 messages_to_send.append({"role": "system", "content": user_prompt})
             except FileNotFoundError as e:
                 logger.error(f"用户 {user_id} 的提示文件错误: {e}，使用默认提示。")
                 messages_to_send.append({"role": "system", "content": "你是一个乐于助人的助手。"})
-            
-            with queue_lock:
+
+            # 3. 管理并检索聊天历史记录
+            with queue_lock: # 确保对 chat_contexts 的访问是线程安全的
+                # 确保用户条目存在且为字典格式，处理旧格式到新格式的迁移
                 user_data = chat_contexts.get(user_id)
+                # 2024-05-24: 修正迁移逻辑
+                # Bot不应执行自动迁移，因为它无法确知旧列表格式上下文对应的原始Prompt。
+                # 正确的迁移逻辑已移至config_editor.py的submit_config函数中，在用户明确切换角色时触发。
+                # 如果在此处仍检测到列表格式，说明数据尚未迁移。为避免数据错乱，我们将为当前角色开启全新的对话历史。
                 if not isinstance(user_data, dict):
                     if isinstance(user_data, list) and user_data:
-                        logger.warning(f"用户 {user_id} 存在未迁移的旧格式上下文。将开启新历史。")
+                        logger.warning(f"用户 {user_id} 存在未迁移的旧格式上下文。机器人将为当前角色 '{prompt_name}' 开启新的对话历史。旧历史将在下次于UI中切换该用户角色时被正确迁移。")
+                    # 初始化一个空的字典，为当前用户创建一个新的、符合新格式的上下文容器
                     chat_contexts[user_id] = {}
                 
+                # 确保当前角色的聊天记录列表存在
                 if prompt_name not in chat_contexts[user_id]:
                     chat_contexts[user_id][prompt_name] = []
-                
+
+                # 在添加当前消息之前获取现有历史记录
                 history = list(chat_contexts[user_id].get(prompt_name, []))
+
+                # 如果历史记录超过限制，则进行裁剪
                 if len(history) > context_limit:
                     history = history[-context_limit:]
+
+                # 将历史消息添加到 API 请求列表中
                 messages_to_send.extend(history)
+
+                # 4. 将当前用户消息添加到 API 请求列表中
                 messages_to_send.append({"role": "user", "content": message})
+
+                # 5. 在准备 API 调用后更新持久上下文
+                current_context = chat_contexts[user_id][prompt_name]
+                current_context.append({"role": "user", "content": message})
+                if len(current_context) > context_limit + 1:
+                    chat_contexts[user_id][prompt_name] = current_context[-(context_limit + 1):]
                 
-                chat_contexts[user_id][prompt_name].append({"role": "user", "content": message})
-                if len(chat_contexts[user_id][prompt_name]) > context_limit + 1:
-                    chat_contexts[user_id][prompt_name] = chat_contexts[user_id][prompt_name][-(context_limit + 1):]
                 save_chat_contexts()
+
         else:
+            # --- 处理工具调用（如提醒解析、总结） ---
             messages_to_send.append({"role": "user", "content": message})
             logger.info(f"工具调用 (store_context=False)，ID: {user_id}。仅发送提供的消息。")
-        # --- 上下文管理逻辑结束 ---
 
-        # 调用重构后的API函数。它现在只在真正失败时抛出异常。
+        # --- 调用 API ---
         reply = call_chat_api_with_retry(messages_to_send, user_id, is_summary=is_summary)
 
-        # 【关键修改】只有在AI真的回复了内容时，才存储助手的回复
-        if reply and store_context:
-            with queue_lock:
+        # --- 如果需要，存储助手回复到上下文中 ---
+        if store_context:
+            with queue_lock: # 再次获取锁来更新和保存
                 prompt_name = prompt_mapping.get(user_id, user_id)
-                if isinstance(chat_contexts.get(user_id), dict) and prompt_name in chat_contexts[user_id]:
-                    current_context = chat_contexts[user_id][prompt_name]
-                    current_context.append({"role": "assistant", "content": reply})
+                
+                # 再次确保数据结构完整性，以防万一
+                if not isinstance(chat_contexts.get(user_id), dict):
+                   chat_contexts[user_id] = {}
+                if prompt_name not in chat_contexts[user_id]:
+                   chat_contexts[user_id][prompt_name] = []
 
-                    if len(current_context) > context_limit: # 再次裁剪
-                       chat_contexts[user_id][prompt_name] = current_context[-context_limit:]
-                    
-                    save_chat_contexts()
+                current_context = chat_contexts[user_id][prompt_name]
+                current_context.append({"role": "assistant", "content": reply})
+
+                if len(current_context) > context_limit:
+                    chat_contexts[user_id][prompt_name] = current_context[-context_limit:]
+                
+                # 保存上下文到文件
+                save_chat_contexts() # 在助手回复添加后再次保存
         
-        return reply # 直接返回 'reply'，它可能是AI的回复，也可能是空字符串""
+        return reply
 
     except Exception as e:
         logger.error(f"Chat 调用失败 (ID: {user_id}): {str(e)}", exc_info=True)
-        return "抱歉api报错"
-
+        return "api报错了"
 
 
 def strip_before_thought_tags(text):
@@ -759,88 +817,104 @@ def strip_before_thought_tags(text):
     else:
         return text
 
-# markdown代码块: python
 def call_chat_api_with_retry(messages_to_send, user_id, max_retries=2, is_summary=False):
     """
-    【已重构】调用 Chat API，优雅处理空响应。
-    - 真正失败（网络、认证）时才重试。
-    - 成功但内容为空时，立即返回空字符串""，不重试。
+    调用 Chat API 并在第一次失败或返回空结果时重试，包含200秒全局超时。
+
+    参数:
+        messages_to_send (list): 要发送给 API 的消息列表。
+        user_id (str): 用户或系统组件的标识符。
+        max_retries (int): 最大重试次数。
+
+    返回:
+        str: API 返回的文本回复。
+    
+    异常:
+        TimeoutError: 如果总处理时间超过200秒。
     """
     attempt = 0
-    TOTAL_TIMEOUT = 240
+    
+    # --- 全局超时控制 ---
+    TOTAL_TIMEOUT = 240  # 秒
     start_time = time.time()
-    last_exception = None # 用于记录最后一次的真实异常
 
     while attempt <= max_retries:
+        # --- 检查总时间是否已超时 ---
         elapsed_time = time.time() - start_time
         if elapsed_time >= TOTAL_TIMEOUT:
             logger.error(f"API调用总时间超过 {TOTAL_TIMEOUT} 秒，已超时。用户: {user_id}")
+            # 抛出标准的TimeoutError，以便上层捕获
             raise TimeoutError(f"API call timed out after {TOTAL_TIMEOUT} seconds.")
-
+        
+        # 计算本次请求的剩余超时时间
         request_timeout = TOTAL_TIMEOUT - elapsed_time
 
         try:
-            logger.debug(f"发送给 API 的消息 (ID: {user_id}, 尝试: {attempt+1}/{max_retries+1})")
-            model_to_use = ASSISTANT_MODEL if is_summary and ENABLE_ASSISTANT_MODEL else MODEL # 假设有ASSISTANT_MODEL变量
+            logger.debug(f"发送给 API 的消息 (ID: {user_id}): {messages_to_send}")
 
             response = client.chat.completions.create(
-                model=model_to_use,
+                model=MODEL,
                 messages=messages_to_send,
                 temperature=TEMPERATURE,
                 max_tokens=MAX_TOKEN,
                 stream=False,
-                timeout=request_timeout
+                timeout=request_timeout  # 将计算出的超时时间传递给API调用
             )
 
-            # --- 【关键修改区域开始】 ---
-            if response and response.choices and response.choices[0].message:
+            if response.choices:
                 content = response.choices[0].message.content
                 if content:
                     content = content.strip()
-                    # 经过处理后如果还有内容，则返回
-                    filtered_content = strip_before_thought_tags(content) if 'strip_before_thought_tags' in globals() else content
-                    if filtered_content:
-                        logger.info(f"成功从 API 获取到有效响应 (用户: {user_id})")
-                        return filtered_content
+                    if content and "[image]" not in content:
+                        filtered_content = strip_before_thought_tags(content)
+                        if filtered_content:
+                            return filtered_content
 
-            # 如果执行到这里，说明API调用成功，但返回了空内容。
-            logger.warning(f"API 调用成功，但返回了空内容。模型: {model_to_use}, 用户: {user_id}。将停止重试并返回空字符串。")
-            logger.debug(f"导致空内容的完整响应对象: {response}")
-            return "" # **核心修改：不再重试，直接返回空字符串**
-            # --- 【关键修改区域结束】 ---
+            logger.error(f"错误请求消息体: {MODEL}")
+            logger.error(json.dumps(messages_to_send, ensure_ascii=False, indent=2))
+            logger.error(f"\033[31m错误：API 返回了空的选择项或内容为空。模型名:{MODEL}\033[0m")
+            logger.error(f"完整响应对象: {response}")
 
-        except APITimeoutError as timeout_err:
-            last_exception = timeout_err
-            logger.warning(f"单次 API 请求超时 (总已用时: {elapsed_time:.1f}s)。准备重试... (用户: {user_id})")
-        
+        except APITimeoutError:
+            # 捕获单次请求超时，并记录日志。外层循环会控制总时间。
+            logger.warning(f"单次 API 请求超时 (总已用时: {elapsed_time:.1f}s)。正在准备下一次尝试...")
+            # 这里不需要做任何特殊操作，外层循环会继续或因总时间超时而终止
+
         except Exception as e:
-            last_exception = e
-            logger.error(f"自动重试：第 {attempt + 1} 次调用 {model_to_use} 失败 (ID: {user_id}) 原因: {type(e).__name__} - {e}", exc_info=False)
-            
-            error_info = str(e).lower() # 转为小写以稳定匹配
-            # 处理特定不可重试的错误
-            if any(term in error_info for term in ["real name verification", "payment required", "user quota", "is not enough", "unlimitedquota", "api key is invalid", "sensitive words detected"]):
-                logger.error(f"检测到不可重试的严重错误，将终止对用户 {user_id} 的 API 调用。")
-                if "sensitive words detected" in error_info and ENABLE_SENSITIVE_CONTENT_CLEARING:
+            logger.error(f"错误请求消息体: {MODEL}")
+            logger.error(json.dumps(messages_to_send, ensure_ascii=False, indent=2))
+            error_info = str(e)
+            logger.error(f"自动重试：第 {attempt + 1} 次调用 {MODEL}失败 (ID: {user_id}) 原因: {error_info}", exc_info=False)
+
+            if "real name verification" in error_info:
+                logger.error("\033[31m错误：API 服务商反馈请完成实名认证后再使用！\033[0m")
+                break
+            elif "rate limit" in error_info:
+                logger.error("\033[31m错误：API 服务商反馈当前访问 API 服务频次达到上限，请稍后再试！\033[0m")
+            elif "payment required" in error_info:
+                logger.error("\033[31m错误：API 服务商反馈您正在使用付费模型，请先充值再使用或使用免费额度模型！\033[0m")
+                break
+            elif "user quota" in error_info or "is not enough" in error_info or "UnlimitedQuota" in error_info:
+                logger.error("\033[31m错误：API 服务商反馈，你的余额不足，请先充值再使用! 如有余额，请检查令牌是否为无限额度。\033[0m")
+                break
+            elif "Api key is invalid" in error_info:
+                logger.error("\033[31m错误：API 服务商反馈 API KEY 不可用，请检查配置选项！\033[0m")
+            elif "service unavailable" in error_info:
+                logger.error("\033[31m错误：API 服务商反馈服务器繁忙，请稍后再试！\033[0m")
+            elif "sensitive words detected" in error_info:
+                logger.error("\033[31m错误：Prompt或消息中含有敏感词，无法生成回复，请联系API服务商！\033[0m")
+                if ENABLE_SENSITIVE_CONTENT_CLEARING:
                     logger.warning(f"已开启敏感词自动清除上下文功能，开始清除用户 {user_id} 的聊天上下文")
-                    # (假设您有这些函数)
-                    clear_chat_context(user_id) 
+                    clear_chat_context(user_id)
                     if is_summary:
                         clear_memory_temp_files(user_id)
-                raise e # **核心修改：将严重错误直接抛出，而不是break**
-            
-            # 对于其他可重试错误（如 rate limit, service unavailable），继续循环
-            logger.info("错误可重试，将进入下一次尝试...")
+                break
+            else:
+                logger.error("\033[31m未知错误：" + error_info + "\033[0m")
 
         attempt += 1
-        # 等待一小段时间再重试
-        if attempt <= max_retries:
-            time.sleep(2)
 
-    # 如果所有重试都因真实异常而失败，则抛出最后一次捕获的异常
-    logger.critical(f"所有 ({max_retries + 1}) 次 API 调用尝试均因真实异常而失败 (用户: {user_id})。")
-    raise RuntimeError("抱歉api报错")
-
+    raise RuntimeError("api报错了")
 
 
 def get_assistant_response(message, user_id, is_summary=False, system_prompt=None):
@@ -1006,7 +1080,7 @@ def keep_alive():
         # 等待指定间隔后再进行下一次检查
         time.sleep(check_interval)
 # ==================== 拍一拍功能区 开始 (最终验证版) ====================
-# ==================== 拍一-拍功能区 ("最终解释"键盘模拟版) ====================
+# ==================== 拍一拍功能区 ("最终解释"键盘模拟版) ====================
 
 import uiautomation as uia
 import pyautogui
@@ -1032,7 +1106,8 @@ def pat_pat_user_threaded(chat_name: str, target_user_name: str):
         chat_name (str): 聊天窗口的名称 (好友昵称或群聊名称)。
         target_user_name (str): 要拍的人的昵称。
     """
-    chat_window_control = None
+    with ui_automation_lock:
+        chat_window_control = None
     
     try:
         logger.info(f"[拍一拍任务] 子线程启动：准备在聊天 '{chat_name}' 中拍 '{target_user_name}'。")
@@ -1251,148 +1326,235 @@ def pat_myself_threaded(chat_name: str):
             chat_window_control.SetTopmost(False)
         logger.debug(f"[拍自己任务] 任务结束，资源已释放。")
 
-def normalize_for_robust_comparison(text: str) -> str:
-    """
-    """
-    if not text:
-        return ""
-    # [^\w] 匹配任何非字母、非数字、非下划线的字符，也就是所有标点和空格
-    return re.sub(r'[^\w]', '', str(text))
+# ==================== 拍一拍功能区 结束 ====================
 
+# ==================== 撤回消息功能区 开始 ====================
 
-def normalize_for_robust_comparison(text: str) -> str:
+def recall_message_threaded(chat_name: str, message_content: str):
     """
-    【辅助函数】
-    为实现极其稳健的UI文本匹配，此函数执行以下操作：
-    1. 移除所有标点符号 (如 . , ? ! ？。，！)
-    2. 移除所有空白字符 (如 空格, 换行符, 制表符)
-    例如：'说来听听？' -> '说来听听'
-          '承认得这么快。' -> '承认得这么快'
-    这样可以确保即使UI元素的Name属性缺少标点，也能100%匹配成功。
+    在一个新的线程中执行撤回消息操作。
+    
+    Args:
+        chat_name: 聊天窗口名称
+        message_content: 要撤回的消息内容
     """
-    if not text:
-        return ""
-    # [^\w] 匹配任何非字母、非数字、非下划线的字符，也就是所有标点和空格
-    # 同时处理中日韩字符
-    pattern = re.compile(r'[^\w\u4e00-\u9fa5\u3040-\u309F\u30A0-\u30FF]+')
-    return pattern.sub('', str(text))
-
-
-
-def recall_message_by_index_final_version(chat_name: str, index: int = 1):
-    """
-    在一个新的线程中，通过“最终版纯文本定位”方式执行消息撤回。
-    [V-Fix-20250824-D - 终极修复+用户校准：严格按照用户指定的键盘操作(UP*2)作为B计划]
-    """
-    chat_window_control = None
+    with ui_automation_lock:
+        chat_window_control = None
+    
     try:
-        logger.info(f"[最终撤回任务] 子线程启动：准备在聊天 '{chat_name}' 中撤回倒数第 {index} 条消息。")
-
-        # --- 1. 逻辑层：获取目标消息内容 (此部分逻辑不变) ---
-        with last_sent_messages_lock:
-            sent_messages = [msg for msg in last_sent_messages.get(chat_name, []) if msg.get('content')]
+        logger.info(f"[撤回消息任务] 子线程启动：准备在聊天 '{chat_name}' 中撤回消息: '{message_content[:50]}...'")
         
-        if len(sent_messages) < index:
-            wx.SendMsg(chat_name, f"我最近没说那么多话呀，找不到倒数第 {index} 条消息给你撤回了。")
-            return
-
-        target_message_info = sent_messages[-index]
-        content_to_recall = target_message_info['content']
-        time_since_sent = time.time() - target_message_info['timestamp']
-
-        if time_since_sent > 120:
-            wx.SendMsg(chat_name, f"这条消息（“{content_to_recall[:15]}...”）已经发送超过2分钟啦，没办法撤回了哦。")
-            return
-        
-        normalized_target_text = normalize_for_robust_comparison(content_to_recall)
-        logger.info(f"[最终撤回任务] 逻辑校验通过，净化后的目标文本: '{normalized_target_text}'")
-
-        # --- 2. UI层：切换并获取窗口 (此部分逻辑不变) ---
         wx.ChatWith(chat_name)
-        time.sleep(0.5)
+        time.sleep(2.0)  # 增加等待时间，确保消息发送完成
+        
+        uia.uiautomation.SetGlobalSearchTimeout(5.0)
+        logger.info(f"[撤回消息任务] 正在寻找名为 '{chat_name}' 的独立聊天窗口...")
         chat_window_control = uia.WindowControl(Name=chat_name, searchDepth=1)
         
-        if not chat_window_control.Exists(3):
-            logger.error(f"[最终撤回任务] UI失败：无法找到名为 '{chat_name}' 的聊天窗口。")
-            wx.SendMsg(chat_name, "糟糕，我好像找不到我们的聊天窗口了，撤回失败。")
-            return
-
-        chat_window_control.SwitchToThisWindow()
-        time.sleep(0.5) 
-
-        message_list = chat_window_control.ListControl(Name='消息')
-        target_message_item = None
-        
-        all_children = message_list.GetChildren()
-        logger.info(f"[最终撤回任务] 开始UI搜索 (共 {len(all_children)} 个元素)...")
-        
-        for item in reversed(all_children):
-            if item.ControlTypeName == 'ListItemControl' and item.Name and (normalized_target_text in normalize_for_robust_comparison(item.Name)):
-                logger.info(f"🎉 [最终撤回任务] 定位成功！UI气泡: '{item.Name[:30]}...'")
-                target_message_item = item
-                break
-
-        if not target_message_item:
-            logger.error(f"[最终撤回任务] UI失败：遍历完所有可见消息气泡，仍未能找到目标内容。")
-            wx.SendMsg(chat_name, "奇怪，我在聊天记录里找不到那条消息了，可能被刷得太远了...")
+        if not chat_window_control.Exists():
+            logger.error(f"[撤回消息任务] 失败：找不到名为 '{chat_name}' 的独立聊天窗口。")
             return
             
-        # --- 3. 执行层：【【【终极错误修正 - 结合用户校准】】】 ---
+        logger.info(f"[撤回消息任务] 成功锁定目标操作窗口: '{chat_window_control.Name}'")
+        chat_window_control.SetActive()
+        chat_window_control.SetTopmost(True)
+        time.sleep(0.5)  # 增加等待
         
-        # 先执行右键点击，弹出菜单
-        rect = target_message_item.BoundingRectangle
-        pyautogui.rightClick(x=rect.left + rect.width() // 2, y=rect.top + rect.height() // 2)
-        time.sleep(0.5) # 等待菜单弹出
-
-        # A计划: 智能识别 "撤回" 菜单项 (最可靠)
+        message_list = chat_window_control.ListControl(Name='消息')
+        if not message_list.Exists():
+            logger.error(f"[撤回消息任务] 失败：在 '{chat_name}' 窗口中找不到 '消息' 列表控件。")
+            return
+            
+        # 从下往上扫描消息，寻找匹配的内容
+        logger.info("[撤回消息任务] 开始扫描消息列表，寻找要撤回的消息...")
+        all_items = message_list.GetChildren()
+        logger.info(f"[撤回消息任务] 获取到 {len(all_items)} 个消息项")
+        
+        if not all_items:
+            logger.warning("[撤回消息任务] 消息列表为空，可能需要等待消息加载")
+            time.sleep(3)  # 等待3秒让消息加载
+            all_items = message_list.GetChildren()
+            logger.info(f"[撤回消息任务] 重新获取到 {len(all_items)} 个消息项")
+        
+        target_message_item = None
+        list_rect = message_list.BoundingRectangle
+        pane_center_x = list_rect.left + list_rect.width() // 2
+        logger.info(f"[撤回消息任务] 消息列表区域: left={list_rect.left}, width={list_rect.width()}, center={pane_center_x}")
+        
+        # 从最新的消息开始搜索（倒序）
+        logger.info(f"[撤回消息任务] 开始扫描消息列表，寻找包含'{message_content}'的消息...")
+        found_messages = []  # 用于调试，记录找到的所有消息
+        
+        # 新策略：找到所有包含目标内容的消息，然后选择X坐标最大的（最右边的）
+        matching_messages = []
+        
+        for item in reversed(all_items):
+            try:
+                item_name = item.Name
+                if not item_name:
+                    continue
+                
+                # 获取更详细的坐标信息
+                item_rect = item.BoundingRectangle
+                item_center_x = item_rect.xcenter() if hasattr(item_rect, 'xcenter') else (item_rect.left + item_rect.width() // 2)
+                item_left = item_rect.left
+                item_right = item_rect.right
+                
+                position = "右侧(机器人)" if item_center_x > pane_center_x else "左侧(用户)"
+                found_messages.append(f"{position}: '{item_name[:30]}...' [left:{item_left}, center:{item_center_x}, right:{item_right}]")
+                
+                # 检查是否包含要撤回的消息内容
+                if message_content.strip() in item_name:
+                    matching_messages.append({
+                        'item': item,
+                        'name': item_name,
+                        'center_x': item_center_x,
+                        'left': item_left,
+                        'right': item_right
+                    })
+                    logger.info(f"[撤回消息任务] 找到匹配内容的消息: '{item_name}', X范围: {item_left}-{item_right}, 中心: {item_center_x}")
+                    logger.info(f"[撤回消息任务] 已将消息添加到匹配列表，当前匹配数量: {len(matching_messages)}")
+                    
+            except Exception as e:
+                logger.debug(f"[撤回消息任务] 检查消息项时出错: {e}")
+                continue
+        
+        logger.info(f"[撤回消息任务] 消息扫描完成，找到 {len(matching_messages)} 个匹配的消息")
+        
+        # 如果找到匹配的消息，选择第一个（最新的，因为我们是倒序遍历）
+        if matching_messages:
+            # 选择第一个匹配的消息（最新发送的）
+            target_message = matching_messages[0]
+            target_message_item = target_message['item']
+            logger.info(f"[撤回消息任务] 选择最新的匹配消息进行撤回: '{target_message['name']}', X中心: {target_message['center_x']}")
+        else:
+            logger.warning(f"[撤回消息任务] 未找到任何包含内容 '{message_content}' 的消息。")
+        
+        # 如果没找到，输出调试信息
+        if not target_message_item:
+            logger.warning(f"[撤回消息任务] 失败：未找到包含内容 '{message_content}' 的消息。")
+            logger.info(f"[撤回消息任务] 调试信息 - 总共扫描了 {len(all_items)} 个消息项")
+            logger.info(f"[撤回消息任务] 调试信息 - 找到 {len(matching_messages)} 个匹配的消息")
+            logger.info(f"[撤回消息任务] 调试信息 - 最近找到的消息列表:")
+            for i, msg in enumerate(found_messages[:10]):  # 只显示最近10条
+                logger.info(f"  {i+1}. {msg}")
+            logger.info(f"[撤回消息任务] 调试信息 - 聊天窗口中心X坐标: {pane_center_x}")
+            return
+            
+        # 右键点击目标消息
+        message_rect = target_message_item.BoundingRectangle
+        chat_window_rect = chat_window_control.BoundingRectangle
+        
+        # 获取详细的窗口和消息信息
+        logger.info(f"[撤回消息任务] === 详细坐标信息 ===")
+        logger.info(f"[撤回消息任务] 聊天窗口区域: left={chat_window_rect.left}, top={chat_window_rect.top}, right={chat_window_rect.right}, bottom={chat_window_rect.bottom}")
+        logger.info(f"[撤回消息任务] 消息区域: left={message_rect.left}, top={message_rect.top}, right={message_rect.right}, bottom={message_rect.bottom}")
+        
+        message_width = message_rect.width()
+        message_height = message_rect.height()
+        
+        # 保守的点击策略：点击消息的右侧1/4处
+        # 确保点击位置在消息内容区域内，不会超出窗口
+        click_x = message_rect.left + int(message_width * 0.8)  # 消息右侧80%处
+        click_y = message_rect.top + message_height // 2  # 垂直居中
+        
+        # 确保点击坐标在聊天窗口范围内
+        if click_x >= chat_window_rect.right:
+            click_x = chat_window_rect.right - 20
+        elif click_x <= chat_window_rect.left:
+            click_x = chat_window_rect.left + 20
+            
+        if click_y >= chat_window_rect.bottom:
+            click_y = chat_window_rect.bottom - 20
+        elif click_y <= chat_window_rect.top:
+            click_y = chat_window_rect.top + 20
+        
+        # 再次确保点击坐标在消息范围内
+        if click_x >= message_rect.right:
+            click_x = message_rect.right - 10
+        elif click_x <= message_rect.left:
+            click_x = message_rect.left + 10
+            
+        if click_y >= message_rect.bottom:
+            click_y = message_rect.bottom - 5
+        elif click_y <= message_rect.top:
+            click_y = message_rect.top + 5
+        
+        logger.info(f"[撤回消息任务] 消息尺寸: {message_width}x{message_height}")
+        logger.info(f"[撤回消息任务] 计算点击位置: 消息右侧80%处 = ({message_rect.left + int(message_width * 0.8)}, {message_rect.top + message_height // 2})")
+        logger.info(f"[撤回消息任务] 最终点击位置: ({click_x}, {click_y})")
+        
+        # 检查点击位置是否合理
+        if (click_x < chat_window_rect.left or click_x > chat_window_rect.right or 
+            click_y < chat_window_rect.top or click_y > chat_window_rect.bottom):
+            logger.warning(f"[撤回消息任务] 警告：点击位置可能超出聊天窗口范围！")
+        
+        logger.info(f"[撤回消息任务] 准备执行右键点击...")
+        
+        # 直接右键点击消息区域
+        pyautogui.click(x=click_x, y=click_y, button='right', duration=0.25)
+        logger.info("[撤回消息任务] 右键点击指令已发送。等待菜单弹出...")
+        time.sleep(0.5)
+        
+        # A/B计划执行撤回操作
         action_completed = False
-        logger.info("[最终撤回任务 - A计划] 尝试通过控件名称精准定位'撤回'...")
-        menu = uia.MenuControl() # 自动查找当前活动的菜单
-        if menu.Exists(1):
-            recall_item = menu.MenuItemControl(Name='撤回')
-            if recall_item.Exists(0.5):
-                logger.info("[最终撤回任务 - A计划] 成功！已识别到'撤回'项，准备点击。")
+        
+        # A计划: 智能识别撤回选项
+        logger.info("[撤回消息任务 - A计划] 尝试通过控件属性智能识别'撤回'...")
+        uia.uiautomation.SetGlobalSearchTimeout(1.0)
+        menu = uia.MenuControl(ClassName='CMenuWnd')
+        
+        if menu.Exists(0.1):
+            logger.info("[撤回消息任务 - A计划] 成功定位菜单容器，开始遍历子项...")
+            recall_item = None
+            all_menu_items = menu.GetChildren()
+            for item in all_menu_items:
+                if item.Name == '撤回':
+                    recall_item = item
+                    break
+            
+            if recall_item:
+                logger.info("[撤回消息任务 - A计划] 成功！已通过名称识别到'撤回'项，准备点击。")
                 recall_item.Click()
                 action_completed = True
             else:
-                logger.warning("[最终撤回任务 - A计划] 失败：未能找到名为'撤回'的菜单项。")
+                found_names = [child.Name for child in all_menu_items]
+                logger.warning(f"[撤回消息任务 - A计划] 失败：遍历完成，但未能找到名为'撤回'的项。探测到的名称列表: {found_names}。")
         else:
-            logger.warning("[最终撤回任务 - A计划] 失败：未能定位到右键菜单容器。")
-
-        # B计划: 如果A计划失败，则启用用户校准后的键盘操作作为备用方案
+            logger.warning("[撤回消息任务 - A计划] 失败：未能定位到菜单容器。")
+        
+        # B计划: 键盘模拟（如果A计划失败）
         if not action_completed:
-            logger.info("[最终撤回任务 - B计划] A计划失败，启动备用方案：模拟键盘操作！")
+            logger.info("[撤回消息任务 - B计划] A计划失败，启动终极后备方案：模拟键盘操作！")
+            logger.info("[撤回消息任务 - B计划] 正在发送键盘指令: 9次[Down]到达撤回选项 -> [Enter]")
             
-            # 【【【核心修正】】】严格按照用户指定的「两次UP」操作执行
-            logger.info("[最终撤回任务 - B计划] 正在发送键盘指令: [Up] -> [Up] -> [Enter]")
-            pyautogui.press('up') 
-            time.sleep(0.15)
-            pyautogui.press('up') 
-            time.sleep(0.15)
+            # 微信右键菜单：复制(默认选中) -> 需要按9次Down到达撤回
+            for i in range(9):  # 按9次Down键到达撤回选项
+                pyautogui.press('down')
+                time.sleep(0.1)
+            
             pyautogui.press('enter')
+            time.sleep(0.1)
             action_completed = True
-
-        # --- 4. 清理工作 ---
-        with last_sent_messages_lock:
-            if chat_name in last_sent_messages and target_message_info in last_sent_messages[chat_name]:
-                last_sent_messages[chat_name].remove(target_message_info)
-                logger.info(f"[最终撤回任务] 已从可撤回逻辑列表中移除消息记录。")
-
-        logger.info(f"🎉🎉🎉 [最终撤回任务] 任务圆满成功！🎉🎉🎉")
-
+        
+        if action_completed:
+            logger.info(f"🎉🎉🎉 [撤回消息任务] 任务圆满成功！已撤回消息: '{message_content[:50]}...' 🎉🎉🎉")
+        else:
+            logger.error("[撤回消息任务] 致命错误：A计划与B计划全部失败，无法执行撤回操作。")
+            
     except Exception as e:
-        logger.error(f"[最终撤回任务] 执行时发生未知严重错误", exc_info=True)
-        if chat_name:
-            try:
-                wx.SendMsg(chat_name, "抱歉，执行撤回操作时遇到了一个内部错误。")
-            except Exception as send_err:
-                logger.error(f"尝试发送最终错误消息也失败了: {send_err}")
+        logger.error(f"[撤回消息任务] 执行时发生未知严重错误", exc_info=True)
+        try:
+            wx.SendMsg(msg="抱歉，执行撤回操作时内部发生严重错误，请检查后台日志。", who=chat_name)
+        except Exception: 
+            pass
     finally:
-        if chat_window_control and chat_window_control.Exists(0, 0):
-             chat_window_control.SetTopmost(False)
+        uia.uiautomation.SetGlobalSearchTimeout(DEFAULT_UI_AUTOMATION_TIMEOUT)
+        if chat_window_control and chat_window_control.Exists(0.1):
+            chat_window_control.SetTopmost(False)
+        logger.debug(f"[撤回消息任务] 任务结束，资源已释放，全局超时已恢复为 {DEFAULT_UI_AUTOMATION_TIMEOUT} 秒。")
 
-
-
+# ==================== 撤回消息功能区 结束 ====================
 
 # ==================== 特殊艾特功能区 开始 (主动聚焦终版) ====================
 def special_at_user_threaded(chat_name: str, target_user_name: str):
@@ -1400,7 +1562,8 @@ def special_at_user_threaded(chat_name: str, target_user_name: str):
     在一个新的线程中执行特殊的@操作 (最终修正版 - Click To Focus)。
     解决了 SetFocus 失败的问题，改用模拟鼠标点击来可靠地获取输入框焦点。
     """
-    chat_window = None
+    with ui_automation_lock:
+        chat_window = None
     try:
         logger.info(f"[特殊艾特任务] 子线程启动：准备在 '{chat_name}' 中艾特 '{target_user_name}'。")
         
@@ -1470,15 +1633,14 @@ def special_at_user_threaded(chat_name: str, target_user_name: str):
         if chat_window and chat_window.Exists(0,0):
              chat_window.SetTopmost(False)
 
-# ==================== 特殊艾特功能区 结束 ====================
 
-# ==================== 带回复的特殊艾特功能区 开始 ====================
 def send_reply_with_special_at_threaded(chat_name: str, target_user_name: str, reply_text: str):
     """
     [V2 - 增强版] 在一个新线程中执行带回复的特殊@操作，并支持消息分割。
     它会先@用户并发送第一段消息，然后将后续分割的消息作为普通消息发送。
     """
-    chat_window = None
+    with ui_automation_lock: 
+        chat_window = None
     try:
         logger.info(f"[带艾特回复任务] 子线程启动：准备在 '{chat_name}' 中艾特 '{target_user_name}' 并回复。")
 
@@ -1523,11 +1685,18 @@ def send_reply_with_special_at_threaded(chat_name: str, target_user_name: str, r
 
         # --- 步骤五：【核心修改】粘贴并发送第一段回复 ---
         try:
-            pyperclip.copy(first_part)
-            logger.info(f"[带艾特回复任务] 第一段回复已复制到剪贴板: '{first_part}'")
-            time.sleep(0.1)
-            pyautogui.hotkey('ctrl', 'v')
-            time.sleep(0.2)
+            # 检查是否有引用操作在进行中，如果有，使用SendKeys追加内容而不是替换
+            with can_send_messages_lock:
+                if not can_send_messages:
+                    logger.info(f"[带艾特回复任务] 检测到引用操作可能正在进行，使用SendKeys追加内容")
+                    auto.SendKeys(first_part, interval=0.01)
+                else:
+                    # 正常情况下使用剪贴板粘贴
+                    pyperclip.copy(first_part)
+                    logger.info(f"[带艾特回复任务] 第一段回复已复制到剪贴板: '{first_part}'")
+                    time.sleep(0.1)
+                    pyautogui.hotkey('ctrl', 'v')
+                    time.sleep(0.2)
         except Exception as e:
             logger.error(f"[带艾特回复任务] 使用剪贴板粘贴第一段回复时失败: {e}", exc_info=True)
             auto.SendKeys(first_part, interval=0.01)
@@ -1561,12 +1730,67 @@ def send_reply_with_special_at_threaded(chat_name: str, target_user_name: str, r
              chat_window.SetTopmost(False)
 
 
+    """清除指定用户的临时记忆日志文件。"""
+    try:
+        from config import MEMORY_TEMP_DIR
+        prompt_name = prompt_mapping.get(user_id, user_id)
+        log_file_path = os.path.join(root_dir, MEMORY_TEMP_DIR, f'{user_id}_{prompt_name}_log.txt')
+        if os.path.exists(log_file_path):
+            os.remove(log_file_path)
+            logger.info(f"已为用户 {user_id} 清除临时记忆文件: {log_file_path}")
+    except (ImportError, AttributeError):
+        logger.warning("无法从config导入MEMORY_TEMP_DIR，将使用默认路径'memory_temp'。")
+        prompt_name = prompt_mapping.get(user_id, user_id)
+        log_file_path = os.path.join(root_dir, 'memory_temp', f'{user_id}_{prompt_name}.txt')
+        if os.path.exists(log_file_path):
+            os.remove(log_file_path)
+            logger.info(f"已为用户 {user_id} 清除临时记忆文件: {log_file_path}")
+    except Exception as e:
+        logger.error(f"为用户 {user_id} 清除临时记忆文件时出错: {e}")
 
-# ==================== 带回复的特殊艾特功能区 结束 ====================
 
-# ==================== 特殊艾特功能区（原版） 开始 ====================
 
-# 在 message_listener 函数的上方，或者在文件的全局区域，添加这个新的函数
+
+    """清除指定用户的临时记忆日志文件。"""
+    try:
+        from config import MEMORY_TEMP_DIR
+        prompt_name = prompt_mapping.get(user_id, user_id)
+        log_file_path = os.path.join(root_dir, MEMORY_TEMP_DIR, f'{user_id}_{prompt_name}_log.txt')
+        if os.path.exists(log_file_path):
+            os.remove(log_file_path)
+            logger.info(f"已为用户 {user_id} 清除临时记忆文件: {log_file_path}")
+    except (ImportError, AttributeError):
+        logger.warning("无法从config导入MEMORY_TEMP_DIR，将使用默认路径'memory_temp'。")
+        prompt_name = prompt_mapping.get(user_id, user_id)
+        log_file_path = os.path.join(root_dir, 'memory_temp', f'{user_id}_{prompt_name}.txt')
+        if os.path.exists(log_file_path):
+            os.remove(log_file_path)
+            logger.info(f"已为用户 {user_id} 清除临时记忆文件: {log_file_path}")
+    except Exception as e:
+        logger.error(f"为用户 {user_id} 清除临时记忆文件时出错: {e}")
+
+
+
+
+    """清除指定用户的临时记忆日志文件。"""
+    try:
+        from config import MEMORY_TEMP_DIR
+        prompt_name = prompt_mapping.get(user_id, user_id)
+        log_file_path = os.path.join(root_dir, MEMORY_TEMP_DIR, f'{user_id}_{prompt_name}_log.txt')
+        if os.path.exists(log_file_path):
+            os.remove(log_file_path)
+            logger.info(f"已为用户 {user_id} 清除临时记忆文件: {log_file_path}")
+    except (ImportError, AttributeError):
+        logger.warning("无法从config导入MEMORY_TEMP_DIR，将使用默认路径'memory_temp'。")
+        prompt_name = prompt_mapping.get(user_id, user_id)
+        log_file_path = os.path.join(root_dir, 'memory_temp', f'{user_id}_{prompt_name}.txt')
+        if os.path.exists(log_file_path):
+            os.remove(log_file_path)
+            logger.info(f"已为用户 {user_id} 清除临时记忆文件: {log_file_path}")
+    except Exception as e:
+        logger.error(f"为用户 {user_id} 清除临时记忆文件时出错: {e}")
+
+
 def initiate_voice_call_threaded(target_user):
     """在一个新的线程中发起语音通话，以避免阻塞主程序"""
     try:
@@ -1580,13 +1804,78 @@ def initiate_voice_call_threaded(target_user):
         logger.error(f"子线程：为用户 {target_user} 发起语音通话时失败: {str(e)}", exc_info=True)
         wx.SendMsg(msg="抱歉，发起语音通话失败，请稍后再试。", who=target_user)
 
-
 def message_listener(msg, chat):
+    """
+    消息回调函数，所有接收到的消息都先经过这里处理。
+    这是修正后的版本，整合了指令处理和常规消息分发。
+    """
     global can_send_messages
-    who = chat.who
-    sender = msg.sender
-    original_content = msg.content
+    global last_received_message_timestamp
+    
+    # 从消息对象中提取关键信息
+    who = chat.who          # 聊天窗口名 (私聊是好友，群聊是群名)
+    sender = msg.sender       # 消息发送者 (私聊是好友，群聊是群成员)
+    msgtype = msg.type        # 消息类型 text, image, etc.
+    original_content = msg.content # 原始消息内容
+    msgattr = msg.attr        # 消息属性，用于判断拍一拍等
+
+    # 1. 统一记录所有收到的有效消息，解决黑窗不显示的问题
+    logger.info(f'收到来自聊天窗口 "{who}" 中用户 "{sender}" 的原始消息 (类型: {msgtype}, 属性: {msgattr}): {str(original_content)[:100]}')
+
+    # 更新最后活动时间戳
+    last_received_message_timestamp = time.time()
+
+    # 2. 检查指令
+    try:
+        from config import ENABLE_TEXT_COMMANDS
+    except ImportError:
+        ENABLE_TEXT_COMMANDS = False
+
+    if ENABLE_TEXT_COMMANDS and msgtype == 'text':
+        # 调用 command_handler，它会返回需要回复的文本或None
+        reply_text = command_handler.process_command(
+            original_content=original_content,
+            user_id=who,
+            clear_context_func=clear_chat_context,
+            clear_memory_func=clear_memory_temp_files
+        )
+        
+        # 如果返回了文本，说明是有效指令
+        if reply_text:
+            logger.info(f"指令 '{original_content.strip()}' 已识别，正在回复...")
+            try:
+                # 【【【 模仿“十连抽”的回复方式！！！】】】
+                # 明确指定 msg 和 who 参数，这是最标准的用法
+                wx.SendMsg(msg=reply_text, who=who) 
+                
+                logger.info(f"已向 '{who}' 发送指令回复。")
+            except Exception as e:
+                logger.error(f"向 '{who}' 发送指令回复失败: {e}")
+            
+            # 指令处理完毕，必须 return，不再进行后续AI对话处理
+            return
+
+    # ------------------- 如果不是指令，则继续执行后续的复杂逻辑 -------------------
+
+    # --- START: 消息撤回事件处理 ---
     if sender == 'system' and '撤回了一条消息' in original_content:
+        if '我撤回了一条消息' in original_content or original_content.startswith('你撤回了一条消息'):
+            logger.info(f"检测到AI自己撤回消息的系统提示，将记录到聊天上下文。内容: '{original_content}'")
+            with queue_lock:
+                if who not in chat_contexts:
+                    chat_contexts[who] = {}
+                prompt_name = prompt_mapping.get(who, who)
+                if prompt_name not in chat_contexts[who]:
+                    chat_contexts[who][prompt_name] = []
+                action_message = f"你刚刚撤回了一条消息：{original_content}"
+                chat_contexts[who][prompt_name].append({"role": "assistant", "content": action_message})
+                context_limit = MAX_GROUPS * 2
+                if len(chat_contexts[who][prompt_name]) > context_limit:
+                    chat_contexts[who][prompt_name] = chat_contexts[who][prompt_name][-context_limit:]
+                save_chat_contexts()
+            logger.info(f"已将AI自己的撤回动作记录到用户 '{who}' 的聊天上下文中")
+            return
+            
         is_group_chat = is_user_group_chat(who)
         if not is_group_chat:
             logger.info(f"检测到用户 '{who}' 撤回了一条消息。")
@@ -1595,29 +1884,38 @@ def message_listener(msg, chat):
                 current_time_str = datetime.now().strftime("%Y-%m-%d %A %H:%M:%S")
                 content_with_time = f"[{current_time_str}] {recall_trigger_content}"
                 if who not in user_queues:
-                    user_queues[who] = {
-                        'messages': [content_with_time],
-                        'sender_name': who,
-                        'username': who,
-                        'last_message_time': time.time()
-                    }
+                    user_queues[who] = {'messages': [content_with_time], 'sender_name': who, 'username': who, 'last_message_time': time.time()}
                 else:
                     user_queues[who]['messages'].append(content_with_time)
                     user_queues[who]['last_message_time'] = time.time()
-                
                 logger.info(f"已为用户 '{who}' 加入撤回消息触发指令到队列。")
-            return  
-    msgtype = msg.type
-    msgattr = msg.attr
+            return
+    
+    # --- 拍一拍事件感知 ---
     if msgattr == 'tickle':
         if '我拍了拍自己' in original_content or '我拍了拍' in original_content:
-            logger.info(f"检测到机器人自己发起的拍一拍事件，已忽略。内容: '{original_content}'")
+            logger.info(f"检测到机器人自己发起的拍一拍事件，将记录到聊天上下文。内容: '{original_content}'")
+            with queue_lock:
+                if who not in chat_contexts:
+                    chat_contexts[who] = {}
+                prompt_name = prompt_mapping.get(who, who)
+                if prompt_name not in chat_contexts[who]:
+                    chat_contexts[who][prompt_name] = []
+                action_message = f"{original_content}"
+                chat_contexts[who][prompt_name].append({"role": "assistant", "content": action_message})
+                context_limit = MAX_GROUPS * 2
+                if len(chat_contexts[who][prompt_name]) > context_limit:
+                    chat_contexts[who][prompt_name] = chat_contexts[who][prompt_name][-context_limit:]
+                save_chat_contexts()
+            logger.info(f"已将AI自己的拍一拍动作记录到用户 '{who}' 的聊天上下文中")
             return
+
         is_group = is_user_group_chat(who)
         if is_group:
             if "拍了拍我" not in original_content:
                 logger.info(f"在群聊 '{who}' 中检测到用户间互相拍，与机器人无关，已忽略。")
-                return # 关键：直接返回，不处理这条消息
+                return
+
         logger.info(f"✅ 成功检测到需要处理的拍一拍事件，来自 '{who}'，内容: '{original_content}'")
         pat_trigger_content = f"[这是一个拍一拍的互动通知，内容是：'{original_content}']"
         with queue_lock:
@@ -1627,24 +1925,21 @@ def message_listener(msg, chat):
                 user_queues[who] = {'messages': [content_with_time], 'sender_name': who, 'username': who, 'last_message_time': time.time()}
             else:
                 user_queues[who]['messages'].append(content_with_time)
-                user_queues[who]['last_message_time'] = time.time()       
+                user_queues[who]['last_message_time'] = time.time()
         logger.info(f"已为用户 '{who}' 加入“拍一拍”触发指令到队列。")
-        return 
+        return
+
+    # --- 过滤手打的“拍一拍”文本 ---
     if isinstance(original_content, str) and (original_content.strip().startswith('我拍了拍') or original_content.strip().startswith('你拍了拍')):
         logger.info(f"检测到手打的“拍一拍”格式文本消息，已忽略。内容：'{original_content}'")
-        return 
-    logger.info(f'收到来自聊天窗口 "{who}" 中用户 "{sender}" 的原始消息 (类型: {msgtype}, 属性: {msgattr}): {original_content[:100]}')
-    who = chat.who 
-    msgtype = msg.type
-    original_content = msg.content
-    sender = msg.sender
-    msgattr = msg.attr
-    logger.info(f'收到来自聊天窗口 "{who}" 中用户 "{sender}" 的原始消息 (类型: {msgtype}, 属性: {msgattr}): {str(original_content)[:100]}')
+        return
 
+    # --- 过滤非好友消息 ---
     if msgattr != 'friend': 
         logger.info(f"非好友消息，已忽略。")
         return
-    
+
+    # --- 消息类型转换 (voice, link, quote, merge) ---
     if msgtype == 'voice':
         voicetext = msg.to_text()
         original_content = (f"[语音消息]: {voicetext}")
@@ -1654,7 +1949,6 @@ def message_listener(msg, chat):
         original_content = (f"[卡片链接]: {cardurl}")
 
     if msgtype == 'quote':
-        # 引用消息处理
         quoted_msg = msg.quote_content
         if quoted_msg:
             original_content = f"[引用<{quoted_msg}>消息]: {msg.content}"
@@ -1669,12 +1963,11 @@ def message_listener(msg, chat):
             merged_text_lines = []
             for item in mergecontent:
                 if isinstance(item, list) and len(item) == 3:
-                    sender, content, timestamp = item
+                    item_sender, content, timestamp = item
                     if hasattr(content, 'suffix') and str(content.suffix).lower() in ('.png', '.jpg', '.jpeg', '.gif', '.bmp'):
                         if ENABLE_IMAGE_RECOGNITION:
                             try:
                                 logger.info(f"开始识别图片: {str(content)}")
-                                # 将WindowsPath对象转换为字符串
                                 image_path = str(content)
                                 original_can_send_messages = can_send_messages
                                 content = recognize_image_with_moonshot(image_path, is_emoji=False)
@@ -1683,12 +1976,10 @@ def message_listener(msg, chat):
                                     content = f"[图片识别结果]: {content}"
                                 else:
                                     content = "[图片识别结果]: 无法识别图片内容"
-                                # 确保状态恢复
                                 can_send_messages = original_can_send_messages
                             except Exception as e:
                                 content = "[图片识别失败]"
                                 logger.error(f"图片识别失败: {e}")
-                                # 确保状态恢复
                                 can_send_messages = True
                         else:
                             content = "[图片]"
@@ -1696,85 +1987,55 @@ def message_listener(msg, chat):
                         if ENABLE_IMAGE_RECOGNITION:
                             try:
                                 logger.info(f"开始识别图片: {content}")
-                                # 保存当前状态
                                 original_can_send_messages = can_send_messages
-                                # 处理图片
                                 image_content = recognize_image_with_moonshot(content, is_emoji=False)
                                 if image_content:
                                     logger.info(f"图片识别成功: {image_content}")
                                     content = f"[图片识别结果]: {image_content}"
                                 else:
                                     content = "[图片识别结果]: 无法识别图片内容"
-                                # 确保状态恢复
                                 can_send_messages = original_can_send_messages
                             except Exception as e:
                                 content = "[图片识别失败]"
                                 logger.error(f"图片识别失败: {e}")
-                                # 确保状态恢复
                                 can_send_messages = True
                         else:
                             content = "[图片]"
-                    merged_text_lines.append(f"[{timestamp}] {sender}: {content}")
+                    merged_text_lines.append(f"[{timestamp}] {item_sender}: {content}")
                 else:
                     merged_text_lines.append(str(item))
             merged_text = "\n".join(merged_text_lines)
             original_content = f"[合并转发消息]:\n{merged_text}"
         else:
             original_content = f"[合并转发消息]: {mergecontent}"
-    if not original_content:
-        logger.info("消息内容为空，已忽略。")
-        return
-    original_content = str(original_content)
-# 消息主动撤回
-    who = chat.who
-    sender = msg.sender
-    original_content = msg.content
+    
+    # 在处理完所有消息类型后，将更新后的内容同步回 msg 对象
+    msg.content = original_content
 
-    # 忽略机器人自己的消息，防止命令循环
-    if sender == ROBOT_WX_NAME:
-        logger.debug(f"消息来自机器人自己({sender})，已忽略。")
+    # --- 内容为空检查 ---
+    if not msg.content:
+        logger.info("消息内容在转换后为空，已忽略。")
         return
+    
+    msg.content = str(msg.content)
 
-    # 正则表达式，匹配 "撤回"、"撤回上一条"、"撤回第N条" 等指令
-    # - `(?:撤回|recall)`: 匹配 "撤回" 或 "recall"
-    # - `(?:\s*上一条)?`: 可选地匹配 " 上一条"
-    # - `(?:\s*第(\d+)[条支])?`: 可选地匹配 " 第N条" 或 " 第N支"，并捕获数字 N
-    recall_pattern = r'^(?:撤回|recall)(?:\s*上一条)?(?:\s*第(\d+)[条支])?$'
-    recall_match = re.search(recall_pattern, original_content.strip(), re.IGNORECASE)
-
-    if recall_match:
-        # 提取捕获组中的数字。如果没匹配到数字（例如，指令是"撤回"），则group(1)为None
-        index_str = recall_match.group(1)
-        
-        # 决定撤回的索引。如果指令是"撤回"或"撤回上一条"，则默认为1。否则使用提取的数字。
-        target_index = int(index_str) if index_str else 1
-        
-        logger.info(f"在聊天 '{who}' 中检测到【索引撤回】指令，目标索引: {target_index}")
-        
-        # 创建并启动新的、基于索引的撤回线程
-        recall_thread = threading.Thread(target=recall_message_by_index_final_version, args=(who, target_index))
-        recall_thread.start()
-        
-        # 指令已处理，直接返回，不再交给AI
-        return
- 
-#语音通话请求处理
-    voice_call_keywords = ["语音通话", "给我打电话"]
-    if any(keyword in original_content for keyword in voice_call_keywords):
+    # --- 特殊功能触发 (语音通话, 拍一拍指令, 特殊艾特) ---
+    voice_call_keywords = ["给我打电话"]
+    if any(keyword in msg.content for keyword in voice_call_keywords):
         logger.info(f"用户 {who} 请求语音通话，准备在新线程中发起呼叫。")
         call_thread = threading.Thread(target=initiate_voice_call_threaded, args=(who,))
         call_thread.start()
         return
-# 拍一拍
-    is_group_chat_for_pat = is_user_group_chat(who) # 先判断一次是否群聊
+
+    is_group_chat_for_pat = is_user_group_chat(who)
     if not is_group_chat_for_pat:
-        if original_content == "拍一拍我":
+        if msg.content == "拍一拍我":
             logger.info(f"在与 '{who}' 的私聊中检测到精确指令 '拍一拍我'，准备执行拍一拍。")
             pat_thread = threading.Thread(target=pat_pat_user_threaded, args=(who, who))
             pat_thread.start()
-            return 
+            return
     else:
-        pat_match = re.search(r'测试654321\s*@?(.+)', original_content.strip())
+        pat_match = re.search(r'测试654321\s*@?(.+)', msg.content.strip())
         if pat_match:
             target_name = pat_match.group(1).strip()
             logger.info(f"在群聊 '{who}' 中检测到拍一拍请求，目标: '{target_name}'。")
@@ -1782,9 +2043,8 @@ def message_listener(msg, chat):
             pat_thread.start()
             return
             
-#特殊艾特功能逻辑
     if is_group_chat_for_pat:
-        at_match = re.search(r'(?:测试123456)\s*(.+)', original_content.strip(), re.IGNORECASE)
+        at_match = re.search(r'(?:测试123456)\s*(.+)', msg.content.strip(), re.IGNORECASE)
         if at_match:
             target_name = at_match.group(1).strip()
             if not target_name or len(target_name) > 50:
@@ -1793,30 +2053,30 @@ def message_listener(msg, chat):
                 logger.info(f"在群聊 '{who}' 中检测到特殊艾特请求，目标: '{target_name}'。")
                 at_thread = threading.Thread(target=special_at_user_threaded, args=(who, target_name))
                 at_thread.start()
-                return 
+                return
+
+    # --- 最终的消息触发判断逻辑 ---
     should_process_this_message = False
-    content_for_handler = original_content 
-    is_group_chat = is_user_group_chat(who)
+    content_for_handler = msg.content
+    is_group_chat_final_check = is_user_group_chat(who)
+    group_cfg = get_group_chat_config(who) if is_group_chat_final_check else {}
 
-#获取群聊专属配置
-    group_cfg = get_group_chat_config(who) if is_group_chat else {}
-
-    if not is_group_chat: 
+    if not is_group_chat_final_check:
         if who in user_names:
             should_process_this_message = True
             logger.info(f"收到来自监听列表用户 {who} 的个人私聊消息，准备处理。")
         else:
             logger.info(f"收到来自用户 {sender} (聊天窗口 {who}) 的个人私聊消息，但用户 {who} 不在监听列表或发送者与聊天窗口不符，已忽略。")
-    else: 
-        processed_group_content = original_content 
+    else:
+        processed_group_content = original_content
         at_triggered = False
         keyword_triggered = False
 
         if not group_cfg.get('ACCEPT_ALL_GROUP_CHAT_MESSAGES', False) and group_cfg.get('ENABLE_GROUP_AT_REPLY', True) and ROBOT_WX_NAME:
-            temp_content_after_at_check = processed_group_content           
+            temp_content_after_at_check = processed_group_content
             unicode_at_pattern = f'@{re.escape(ROBOT_WX_NAME)}\u2005'
             space_at_pattern = f'@{re.escape(ROBOT_WX_NAME)} '
-            exact_at_string = f'@{re.escape(ROBOT_WX_NAME)}'           
+            exact_at_string = f'@{re.escape(ROBOT_WX_NAME)}'
             if re.search(unicode_at_pattern, processed_group_content):
                 at_triggered = True
                 temp_content_after_at_check = re.sub(unicode_at_pattern, '', processed_group_content, 1).strip()
@@ -1825,10 +2085,11 @@ def message_listener(msg, chat):
                 temp_content_after_at_check = re.sub(space_at_pattern, '', processed_group_content, 1).strip()
             elif processed_group_content.strip() == exact_at_string:
                 at_triggered = True
-                temp_content_after_at_check = ''               
+                temp_content_after_at_check = ''
             if at_triggered:
                 logger.info(f"群聊 '{who}' 中检测到 @机器人。")
                 processed_group_content = temp_content_after_at_check
+
         if group_cfg.get('ENABLE_GROUP_KEYWORD_REPLY', False):
             keywords_config = group_cfg.get('GROUP_KEYWORD_LIST', [])
             keyword_list = []
@@ -1839,7 +2100,8 @@ def message_listener(msg, chat):
                 keyword_list = keywords_config
             if any(keyword in processed_group_content for keyword in keyword_list):
                 keyword_triggered = True
-                logger.info(f"群聊 '{who}' 中检测到关键词。")       
+                logger.info(f"群聊 '{who}' 中检测到关键词。")
+
         basic_trigger_met = group_cfg.get('ACCEPT_ALL_GROUP_CHAT_MESSAGES', False) or at_triggered or keyword_triggered
         if basic_trigger_met:
             if not group_cfg.get('ACCEPT_ALL_GROUP_CHAT_MESSAGES', False):
@@ -1851,6 +2113,7 @@ def message_listener(msg, chat):
                     logger.info(f"群聊 '{who}' 消息因关键词触发基本处理条件。")
             else:
                 logger.info(f"群聊 '{who}' 消息符合全局接收条件，触发基本处理条件。")
+
             if keyword_triggered and group_cfg.get('GROUP_KEYWORD_REPLY_IGNORE_PROBABILITY', False):
                 should_process_this_message = True
                 logger.info(f"群聊 '{who}' 消息因触发关键词且配置为忽略回复概率，将进行处理。")
@@ -1862,34 +2125,80 @@ def message_listener(msg, chat):
                 logger.info(f"群聊 '{who}' 消息满足基本触发条件，但未通过总回复概率 {group_cfg.get('GROUP_CHAT_RESPONSE_PROBABILITY', 100)}%，将忽略。")
         else:
             should_process_this_message = False
-            logger.info(f"群聊 '{who}' 消息 (发送者: {sender}) 未满足任何基本触发条件（全局、@、关键词），将忽略。")       
+            logger.info(f"群聊 '{who}' 消息 (发送者: {sender}) 未满足任何基本触发条件（全局、@、关键词），将忽略。")
+        
         if should_process_this_message:
             if not msgtype == 'image':
                 content_for_handler = f"[群聊消息-来自群'{who}'-发送者:{sender}]:{processed_group_content}"
             else:
-                content_for_handler = processed_group_content        
+                content_for_handler = processed_group_content
+            
             if not content_for_handler and at_triggered and not keyword_triggered: 
-                logger.info(f"群聊 '{who}' 中单独 @机器人，处理后内容为空，仍将传递给后续处理器。")   
+                logger.info(f"群聊 '{who}' 中单独 @机器人，处理后内容为空，仍将传递给后续处理器。")
+    
+    # 3. 如果通过所有检查，则分发给最终处理器
     if should_process_this_message:
         msg.content = content_for_handler 
         logger.info(f'最终准备处理消息 from chat "{who}" by sender "{sender}": {str(msg.content)[:100]}')
-        if msgtype == 'emotion':
-            is_animation_emoji_in_original = True
-        else:
-            is_animation_emoji_in_original = False
+        
+        is_animation_emoji_in_original = (msgtype == 'emotion')
+
         if is_animation_emoji_in_original and ENABLE_EMOJI_RECOGNITION:
             handle_emoji_message(msg, who, sender)
         else:
             handle_wxauto_message(msg, who, sender)
 
 
+def clear_chat_context(user_id):
+    global chat_contexts
+    with queue_lock:
+        # 1. 根据 user_id 获取当前正在对话的角色名 (prompt_name)
+        prompt_name = prompt_mapping.get(user_id, user_id)
+
+        # 2. 检查用户条目和角色条目是否存在
+        if user_id in chat_contexts and isinstance(chat_contexts.get(user_id), dict) and prompt_name in chat_contexts[user_id]:
+            # 3. 【核心修正】只删除该角色对应的上下文列表，不留任何后备方案
+            del chat_contexts[user_id][prompt_name]
+            save_chat_contexts()
+            logger.warning(f"已精准清除用户 {user_id} 的角色 '{prompt_name}' 的聊天上下文。")
+        else:
+            # 如果找不到，说明本来就是空的，记录一下日志即可，什么也不做
+            logger.info(f"无需清除：用户 {user_id} 或其角色 '{prompt_name}' 的上下文不存在。")
+
+
+def clear_memory_temp_files(user_id):
+    """清除指定用户的临时记忆日志文件。"""
+    try:
+        from config import MEMORY_TEMP_DIR
+        prompt_name = prompt_mapping.get(user_id, user_id)
+        log_file_path = os.path.join(root_dir, MEMORY_TEMP_DIR, f'{user_id}_{prompt_name}_log.txt')
+        if os.path.exists(log_file_path):
+            os.remove(log_file_path)
+            logger.info(f"已为用户 {user_id} 清除临时记忆文件: {log_file_path}")
+    except (ImportError, AttributeError):
+        logger.warning("无法从config导入MEMORY_TEMP_DIR，将使用默认路径'memory_temp'。")
+        prompt_name = prompt_mapping.get(user_id, user_id)
+        log_file_path = os.path.join(root_dir, 'memory_temp', f'{user_id}_{prompt_name}.txt')
+        if os.path.exists(log_file_path):
+            os.remove(log_file_path)
+            logger.info(f"已为用户 {user_id} 清除临时记忆文件: {log_file_path}")
+    except Exception as e:
+        logger.error(f"为用户 {user_id} 清除临时记忆文件时出错: {e}")
+
+
 def recognize_image_with_moonshot(image_path, is_emoji=False):
-    global can_send_messages, can_send_messages_lock
+    global can_send_messages
+    
     with can_send_messages_lock:
         can_send_messages = False
+    
     try:
+        # --- 核心识别逻辑 ---
+        
+        # 读取图片内容并编码
         with open(image_path, 'rb') as img_file:
-            image_content = base64.b64encode(img_file.read()).decode('utf-8')           
+            image_content = base64.b64encode(img_file.read()).decode('utf-8')
+            
         headers = {
             'Authorization': f'Bearer {MOONSHOT_API_KEY}',
             'Content-Type': 'application/json'
@@ -1910,31 +2219,36 @@ def recognize_image_with_moonshot(image_path, is_emoji=False):
         }
         
         url = f"{MOONSHOT_BASE_URL}/chat/completions"
+        
         response = requests.post(url, headers=headers, json=data, timeout=30)
-        response.raise_for_status()       
+        response.raise_for_status() # 检查HTTP错误
+        
         result = response.json()
-        recognized_text = result['choices'][0]['message']['content']      
+        recognized_text = result['choices'][0]['message']['content']
+        
         if is_emoji:
             if "最后一张表情包" in recognized_text:
                 recognized_text = recognized_text.split("最后一张表情包", 1)[1].strip()
             recognized_text = "发送了表情包：" + recognized_text
         else:
-            recognized_text = "发送了图片：" + recognized_text            
+            recognized_text = "发送了图片：" + recognized_text
+            
         logger.info(f"AI图片识别成功: {recognized_text}")
-        return recognized_text 
+        return recognized_text
 
     except requests.exceptions.Timeout:
         logger.error(f"调用AI识别图片超时 (30秒): {image_path}")
-        return "[图片识别超时]" 
+        return "[图片识别超时]"
 
     except Exception as e:
         logger.error(f"调用AI识别图片失败: {str(e)}", exc_info=True)
-        return "[图片识别失败]" 
+        return "[图片识别失败]"
         
     finally:
         with can_send_messages_lock:
             can_send_messages = True
         logger.info(f"图片识别流程结束，can_send_messages 全局锁已恢复为 True。")
+        
         if is_emoji and os.path.exists(image_path):
             try:
                 os.remove(image_path)
@@ -1942,23 +2256,29 @@ def recognize_image_with_moonshot(image_path, is_emoji=False):
             except Exception as clean_err:
                 logger.warning(f"清理临时表情图片失败: {clean_err}")
 
-
-
-def handle_emoji_message(msg, who, sender): 
+def handle_emoji_message(msg, who, sender):
     global emoji_timer
-    global can_send_messages
+    
+    # 立即锁住，防止其他消息发送
     with can_send_messages_lock:
         can_send_messages = False
+
     def timer_callback():
-        with emoji_timer_lock:
-            handle_wxauto_message(msg, who, sender)
-            global emoji_timer
-            emoji_timer = None
+        try:
+            with emoji_timer_lock:
+                handle_wxauto_message(msg, who, sender)
+                global emoji_timer
+                emoji_timer = None
+        finally:
+            # 确保无论如何都能释放锁
             with can_send_messages_lock:
                 can_send_messages = True
+            logger.info("表情包延迟处理完成，can_send_messages 锁已释放。")
+
     with emoji_timer_lock:
         if emoji_timer is not None:
             emoji_timer.cancel()
+        logger.info("检测到连续表情包，重置3秒延迟计时器...")
         emoji_timer = threading.Timer(3.0, timer_callback)
         emoji_timer.start()
 
@@ -1973,6 +2293,7 @@ def fetch_and_extract_text(url: str) -> Optional[str]:
         Optional[str]: 提取并清理后的网页文本内容（限制了最大长度），如果失败则返回 None。
     """
     try:
+        # 基本 URL 格式验证 (非常基础)
         parsed_url = urlparse(url)
         if not all([parsed_url.scheme, parsed_url.netloc]):
              logger.warning(f"无效的URL格式，跳过抓取: {url}")
@@ -1981,15 +2302,20 @@ def fetch_and_extract_text(url: str) -> Optional[str]:
         headers = {'User-Agent': REQUESTS_USER_AGENT}
         logger.info(f"开始抓取链接内容: {url}")
         response = requests.get(url, headers=headers, timeout=REQUESTS_TIMEOUT, allow_redirects=True)
-        response.raise_for_status()  
+        response.raise_for_status()  # 检查HTTP请求是否成功 (状态码 2xx)
 
+        # 检查内容类型，避免处理非HTML内容（如图片、PDF等）
         content_type = response.headers.get('Content-Type', '').lower()
         if 'html' not in content_type:
             logger.warning(f"链接内容类型非HTML ({content_type})，跳过文本提取: {url}")
             return None
 
-        soup = BeautifulSoup(response.content, 'lxml') 
+        # 使用BeautifulSoup解析HTML
+        # 指定 lxml 解析器以获得更好的性能和兼容性
+        soup = BeautifulSoup(response.content, 'lxml') # 使用 response.content 获取字节流，让BS自动处理编码
 
+        # --- 文本提取策略 ---
+        # 尝试查找主要内容区域 (这部分可能需要根据常见网站结构调整优化)
         main_content_tags = ['article', 'main', '.main-content', '#content', '.post-content'] # 示例选择器
         main_text = ""
         for tag_selector in main_content_tags:
@@ -1998,11 +2324,14 @@ def fetch_and_extract_text(url: str) -> Optional[str]:
                 main_text = element.get_text(separator='\n', strip=True)
                 break # 找到一个就停止
 
+        # 如果没有找到特定的主要内容区域，则获取整个 body 的文本作为备选
         body_element = soup.find('body')
         if not main_text and body_element:
             main_text = body_element.get_text(separator='\n', strip=True)
         elif not main_text: # 如果连 body 都没有，则使用整个 soup
              main_text = soup.get_text(separator='\n', strip=True)
+
+        # 清理文本：移除过多空行
         lines = [line for line in main_text.splitlines() if line.strip()]
         cleaned_text = '\n'.join(lines)
 
@@ -2029,6 +2358,7 @@ def fetch_and_extract_text(url: str) -> Optional[str]:
         logger.error(f"处理链接时发生未知错误: {url}, 错误: {e}", exc_info=True)
         return None
 
+# 辅助函数：将用户消息记录到记忆日志 (如果启用)
 def log_user_message_to_memory(username, original_content):
     """将用户的原始消息记录到记忆日志文件。"""
     if ENABLE_MEMORY:
@@ -2066,18 +2396,14 @@ def handle_wxauto_message(msg, who, sender):
 
         # 重置该用户的自动消息计时器
         on_user_message(username)
-        is_group = is_user_group_chat(who)
-        group_config = {}  # 默认初始化为空字典，确保变量始终存在
-        if is_group:
-            group_config = get_group_chat_config(who)
+
 
         # --- 1. 提醒检查 (基于原始消息内容) ---
         reminder_keywords = ["提醒我", "定时"]
         if ENABLE_REMINDERS and any(keyword in original_content for keyword in reminder_keywords):
             logger.info(f"检测到可能的提醒请求，用户 {username}: {original_content}")
             # 尝试解析并设置提醒
-            reminder_set = try_parse_and_set_reminder(original_content, username, group_config)
-
+            reminder_set = try_parse_and_set_reminder(original_content, username)
             # 如果成功设置了提醒，则处理完毕，直接返回
             if reminder_set:
                 logger.info(f"成功为用户 {username} 设置提醒，消息处理结束。")
@@ -2222,13 +2548,8 @@ def check_inactive_users():
 
 # 在 bot.py 文件中找到此函数并用下面的代码完整替换
 
-# markdown代码块: python
-
 def process_user_messages(user_id):
-    """
-    【已修改】处理指定用户的消息队列，包括可能的联网搜索。
-    新增逻辑：当AI返回空内容时，向用户发送一条友好的提示消息。
-    """
+    """处理指定用户的消息队列，包括可能的联网搜索。"""
     global can_send_messages
 
     with queue_lock:
@@ -2247,10 +2568,10 @@ def process_user_messages(user_id):
     reply = None
     online_info = None
 
+    # [核心] 在函数开头就获取配置，以便后续所有流程都能使用
     group_config = get_group_chat_config(user_id)
 
     try:
-        # 联网搜索逻辑保持不变
         if ENABLE_ONLINE_API:
             search_content = needs_online_search(merged_message, user_id)
             if search_content:
@@ -2276,38 +2597,28 @@ def process_user_messages(user_id):
                     logger.warning(f"在线搜索未能获取有效信息，用户: {user_id}。将按常规流程处理。")
                     pass
 
-        # 如果没有经过联网搜索，或者联网搜索失败，则执行常规回复
         if reply is None:
             logger.info(f"为用户 {user_id} 执行常规回复（无联网信息）。")
             reply = get_deepseek_response(merged_message, user_id, store_context=True)
 
-        # --- ▼▼▼ 核心修改区域开始 ▼▼▼ ---
         if reply:
-            # 如果AI成功返回了非空内容，执行原有的清理和发送逻辑
             cleaned_reply = QINGLI_AI_BIAOQIAN_ZHUJIE.sub('', reply).strip()
             
             if "</think>" in cleaned_reply:
                 cleaned_reply = cleaned_reply.split("</think>", 1)[1].strip()
 
             if "## 记忆片段" not in cleaned_reply:
+                # [修正点] 确保 group_config 被正确传递
                 send_reply(user_id, sender_name, username, merged_message, cleaned_reply, group_config)
             else:
                 logger.info(f"回复包含记忆片段标记，已屏蔽发送给用户 {user_id}。")
         else:
-            # 【新增逻辑】如果AI返回了空字符串 "" 或 None，则执行这里的代码
-            logger.warning(f"API 为用户 {user_id} 返回了空内容或生成回复失败，将发送备用消息。")
-            
-            # 您可以自定义这条反馈消息
-            fallback_message = "抱歉，我刚刚大脑好像短路了一下，没想好怎么回复你..."
-            
-            # 使用 send_reply 函数发送这条备用消息，确保行为一致
-            # `original_merged_message` 参数现在用于日志记录，标记这次交互是因空回复而产生的
-            send_reply(user_id, sender_name, username, "[API空回复]", fallback_message, group_config)
-        # --- ▲▲▲ 核心修改区域结束 ▲▲▲ ---
+            logger.error(f"未能为用户 {user_id} 生成任何回复。")
 
     except TimeoutError:
         logger.error(f"处理用户 {user_id} 消息时因API响应超时（超过240秒），发送备用消息。")
         fallback_message = "抱歉，我现在真的很忙，稍后再聊吧。"
+        # [修正点] 在异常处理中也要确保 group_config 被正确传递
         send_reply(user_id, sender_name, username, "[API响应超时]", fallback_message, group_config)
             
     except Exception as e:
@@ -2318,12 +2629,11 @@ def process_user_messages(user_id):
             logger.error(f"用户消息处理失败 (用户: {user_id}): {str(e)}")
             raise
 
-
-
-
 def send_reply(user_id, sender_name, username, original_merged_message, reply, group_config=None):
     """
-    [V3 - 终版] 统一发送回复的函数，内置“真艾特”调用和标准消息分割逻辑。
+    - 统一发送回复的函数。
+    - 处理 [拍一拍xx] 指令，仅执行动作。
+    - 使用动态正则表达式精确过滤 "我拍了拍<目标>" 格式的叙述文本。
     """
     if not reply:
         logger.warning(f"尝试向 {user_id} 发送空回复，操作已取消。")
@@ -2336,37 +2646,28 @@ def send_reply(user_id, sender_name, username, original_merged_message, reply, g
         role_name = prompt_mapping.get(username, username)
         log_ai_reply_to_memory(username, role_name, reply)
 
-    # --- [全新核心逻辑] 1. 判断是否需要执行“带回复的真艾特” ---
+    # --- 1. 判断是否需要执行“带回复的真艾特” ---
     is_group = is_user_group_chat(username)
-    # 检查是否是群聊、是否开启了@回复、发言人是否存在且不是机器人自己
     if is_group and group_config.get("ENABLE_GROUP_AT_REPLY_IN_REPLIES", False):
         if sender_name and sender_name != ROBOT_WX_NAME:
             logger.info(f"检测到群聊'{username}'需要【真艾特】回复发言人'{sender_name}'，启动UI自动化流程。")
-            
-            # **关键：调用专用的、带回复的真艾特函数**
-            # 这个函数会处理@、粘贴回复、发送的全部UI操作
             at_reply_thread = threading.Thread(
                 target=send_reply_with_special_at_threaded,
-                # 参数: (聊天窗口名, 目标用户名, 完整的回复内容)
                 args=(username, sender_name, reply) 
             )
             at_reply_thread.start()
-            
-            # **重要：任务已交给专用线程处理，直接返回，不再执行后续的标准发送流程**
             return
 
-    # --- [标准发送流程] 如果不是真艾特回复，则执行以下标准流程（私聊或群聊@关闭时）---
-    logger.info(f"检测到私聊或群聊（@关闭），执行标准分段发送流程。")
-    
+    # --- 2. [标准发送流程] 分割消息为动作和文本 ---
+    logger.info(f"执行标准分段发送流程。")
     final_send_queue = []
-    raw_parts = re.split(r'(\[.*?\])', reply)
+    raw_parts = re.split(r'(\[\[撤回\][^\]]*\]|\[.*?\])', reply)
     
     for part in raw_parts:
-        if not part.strip():
-            continue
-        
-        match = re.match(r'\[(.*?)\]', part)
-        if match:
+        if not part.strip(): continue
+        if part.startswith('[[撤回]') and part.endswith(']'):
+            final_send_queue.append({'type': 'action', 'content': part})
+        elif re.match(r'\[.*?\]$', part):
             final_send_queue.append({'type': 'action', 'content': part})
         else:
             text_snippets = split_message_with_context(part)
@@ -2378,92 +2679,107 @@ def send_reply(user_id, sender_name, username, original_merged_message, reply, g
         logger.warning(f"处理后无可发送内容，原始回复: {reply}")
         return
 
+    # --- 3. 循环处理发送队列 ---
     valid_emoji_tags = {d for d in os.listdir(EMOJI_DIR) if os.path.isdir(os.path.join(EMOJI_DIR, d))} if os.path.exists(EMOJI_DIR) else set()
 
-    if final_send_queue:
-        with last_sent_messages_lock:
-            last_sent_messages[user_id] = []
-            logger.debug(f"为用户 '{user_id}' 的新回复清空了可撤回消息列表。")
-
-    for item in final_send_queue:
+    i = 0
+    while i < len(final_send_queue):
+        item = final_send_queue[i]
         item_type = item['type']
         item_content = item['content']
         
         if item_type == 'action':
             content_stripped = item_content.strip()
-
-            # 优先级 1: 精确匹配特殊指令
-            if content_stripped == '[拍一拍对方]':
-                if not is_group:
-                    logger.info(f"执行[拍一拍对方]指令，目标: {username}...")
-                    pat_thread = threading.Thread(target=pat_pat_user_threaded, args=(username, username))
+            
+            # 处理撤回指令
+            if content_stripped.startswith('[[撤回]') and content_stripped.endswith(']'):
+                message_to_recall = content_stripped[5:-1].strip()
+                if message_to_recall:
+                    logger.info(f"执行撤回消息指令，目标消息: '{message_to_recall}'")
+                    recall_thread = threading.Thread(target=recall_message_threaded, args=(user_id, message_to_recall))
+                    recall_thread.start()
+                    recall_thread.join(timeout=15)
+            
+            # 处理所有 [拍一拍xx] 指令
+            elif content_stripped.startswith('[拍一拍') and content_stripped.endswith(']'):
+                pat_match = re.match(r'\[拍一拍\s*(.*?)\]$', content_stripped)
+                target = pat_match.group(1).strip() if pat_match else ""
+                if target == '自己':
+                    logger.info(f"执行[拍一拍自己]指令...")
+                    pat_self_thread = threading.Thread(target=pat_myself_threaded, args=(user_id,))
+                    pat_self_thread.start()
+                    pat_self_thread.join(timeout=15)
+                elif is_group and target and target != '对方':
+                    logger.info(f"执行[拍一拍 {target}]指令...")
+                    pat_thread = threading.Thread(target=pat_pat_user_threaded, args=(user_id, target))
                     pat_thread.start()
                     pat_thread.join(timeout=15)
-                # 处理完毕，跳过后续所有表情逻辑
-                continue
-        
-            elif content_stripped == '[拍一拍自己]':
-                logger.info(f"执行[拍一拍自己]指令，在聊天 '{username}' 中操作...")
-                pat_self_thread = threading.Thread(target=pat_myself_threaded, args=(username,))
-                pat_self_thread.start()
-                # 处理完毕，跳过后续所有表情逻辑
-                continue
-            
-            # 优先级 2: 处理所有其他 [...] 格式的标签
-            match = re.match(r'\[(.*?)\]', content_stripped)
-            if match:
-                tag = match.group(1)
-                tag_len = len(tag)
-                
-                # 条件A: 检查是否为【可发送的有效表情】(存在且长度不超限)
-                is_valid_sendable_emoji = (
-                    tag 
-                    and tag in valid_emoji_tags 
-                    and tag_len <= EMOJI_TAG_MAX_LENGTH
-                )
-                
-                if is_valid_sendable_emoji:
-                    # 作为表情图片发送
-                    logger.info(f"检测到有效表情标签: [{tag}]，准备发送图片...")
-                    emoji_path = send_emoji(tag)
-                    if emoji_path:
-                        wx.SendFiles(filepath=emoji_path, who=user_id)
-                        time.sleep(EMOJI_SEND_INTERVAL)
+                elif not is_group or (is_group and (target == '对方' or not target)):
+                    logger.info(f"执行[拍一拍对方]指令 (目标: '{sender_name}')...")
+                    pat_thread = threading.Thread(target=pat_pat_user_threaded, args=(user_id, sender_name))
+                    pat_thread.start()
+                    pat_thread.join(timeout=15)
                 else:
-                    # 条件B: 表情无效或超长，根据长度决定处理方式
-                    if tag_len > EMOJI_TAG_MAX_LENGTH:
-                        # 长度超限，则作为普通文本发送
-                        logger.info(f"标签 [{tag}] 长度({tag_len})超过限制({EMOJI_TAG_MAX_LENGTH})，作为普通文本发送。")
-                        wx.SendMsg(msg=item_content, who=user_id)
-                        time.sleep(TEXT_SEND_INTERVAL)
-                    else:
-                        # 长度未超限但表情不存在，则直接忽略
-                        logger.warning(f"标签 [{tag}] 无效或不存在，且长度未超限，已过滤。")
-                        # 此处为空，不执行任何操作，即“废弃”
+                    logger.warning(f"拍一拍指令 '{content_stripped}' 无法执行，已忽略。")
             
-            # 无论如何，处理完一个 [...] 标签后都应跳过
-            continue
+            # 处理其他 [...] 标签，如表情包
+            else:
+                match = re.match(r'\[(.*?)\]', content_stripped)
+                if match:
+                    tag = match.group(1)
+                    # 优先检查文件夹是否存在
+                    if tag and tag in valid_emoji_tags:
+                        logger.info(f"检测到有效表情标签: [{tag}] (文件夹存在)，准备发送图片...")
+                        emoji_path = send_emoji(tag)
+                        if emoji_path:
+                            wx.SendFiles(filepath=emoji_path, who=user_id)
+                            time.sleep(EMOJI_SEND_INTERVAL)
+                    # 如果文件夹不存在，再进行长度判断
+                    else:
+                        # 过滤无效的拍一拍叙述文本
+                        if '我拍了拍' in tag or '你拍了拍' in tag:
+                            logger.info(f"检测到不规范的拍一拍格式文本'[{tag}]'，已成功过滤。")
+                        
+                        # 根据长度决定是过滤还是作为文本发送
+                        elif len(tag) <= EMOJI_TAG_MAX_LENGTH:
+                            logger.info(f"标签'[{tag}]'无效(文件夹不存在)且长度小于等于限制({EMOJI_TAG_MAX_LENGTH})，已按要求过滤。")
+                            # 不执行任何发送操作，即为过滤
+                        
+                        else:
+                            logger.info(f"标签'[{tag}]'无效(文件夹不存在)但长度超过限制({EMOJI_TAG_MAX_LENGTH})，作为普通文本发送。")
+                            wx.SendMsg(msg=item_content, who=user_id)
+                            time.sleep(TEXT_SEND_INTERVAL)
 
         elif item_type == 'text':
-            # 标准流程中的文本发送
-            text_to_send = remove_timestamps(item_content)
-            if REMOVE_PARENTHESES:
-                text_to_send = remove_parentheses_and_content(text_to_send)
-            
-            if text_to_send:
-                wx.SendMsg(msg=text_to_send, who=user_id)
-                with last_sent_messages_lock:
-                    if user_id not in last_sent_messages or not isinstance(last_sent_messages[user_id], list):
-                            last_sent_messages[user_id] = []                
-                    last_sent_messages[user_id].append({
-                            'content': text_to_send,
-                            'timestamp': time.time()
-                    })
-                    logger.debug(f"已将发送给 '{user_id}' 的消息片段添加至可撤回列表: '{text_to_send[:30]}...'")                     
-                time.sleep(TEXT_SEND_INTERVAL)
+            # --- 动态文本过滤器 ---
+            # 1. 获取当前对话的角色名 (AI的名字)
+            # 注意: 'role_name' 在函数开头已经被定义
+            role_name = prompt_mapping.get(username, username)
 
+            # 2. 构建动态正则表达式，匹配多种“拍一拍”的叙述
+            # 使用 re.escape 来安全处理可能包含特殊字符的昵称
+            # 允许 "我拍了拍" 和目标之间有0个或多个空格 (\s*)
+            pat_narrative_pattern = re.compile(
+                rf"^我拍了拍\s*['\"]?({re.escape(role_name)}|{re.escape(sender_name)}|自己|对方)['\"]?.*"
+            )
 
+            # 3. 检查文本开头是否匹配该模式
+            if pat_narrative_pattern.match(item_content.strip()):
+                logger.info(f"检测到并已过滤不应发送的拍一拍叙述性文本: '{item_content}'")
+                # 匹配成功，直接跳过此文本段的发送
+            else:
+                # 如果文本通过了过滤器，则继续执行原有的处理和发送流程
+                text_to_send = remove_timestamps(item_content)
+                if REMOVE_PARENTHESES:
+                    text_to_send = remove_parentheses_and_content(text_to_send)
+                
+                if text_to_send:
+                    wx.SendMsg(msg=text_to_send, who=user_id)
+                    time.sleep(TEXT_SEND_INTERVAL)
+            # --- 过滤器结束 ---
 
+        i += 1
+        
 def split_message_with_context(text):
     """
     将消息文本分割为多个部分，处理换行符、转义字符和$符号。
@@ -2603,9 +2919,6 @@ def remove_parentheses_and_content(text: str) -> str:
     processed_text = "\n".join(stripped_lines)
     return processed_text
 
-
-
-
 def send_emoji(tag: str) -> Optional[str]:
     """根据标签名发送对应表情包"""
     if not tag:
@@ -2647,6 +2960,45 @@ def clean_up_temp_files ():
     else:
         logger.info(f"目录 wxautox文件下载 不存在，无需删除")
 
+def append_to_memory_section(user_id, role_name, summary):
+    """
+    将日记内容追加到用户的.md文件中
+    """
+    try:
+        prompts_dir = os.path.join(root_dir, 'prompts')
+        user_file_path = os.path.join(prompts_dir, f'{role_name}.md')
+
+        if not os.path.exists(user_file_path):
+            logger.error(f"无法找到用户 {user_id} 的角色设定文件: {user_file_path}")
+            return
+            
+        with open(user_file_path, 'r+', encoding='utf-8') as file:
+            content = file.read()
+            
+            # 清理summary，移除所有可能的标签
+            cleaned_summary = re.sub(r'</?thinking>', '', summary).strip()
+            
+            # 准备一个完整的、格式绝对正确的日记条目
+            current_time_str = datetime.now().strftime("%Y-%m-%d %A %H:%M")
+            diary_entry = f"""## 日记 [{current_time_str}]
+**摘要**: {cleaned_summary}"""
+
+            # 移动到文件末尾准备写入
+            file.seek(0, 2)
+            
+            # 在写入前，先判断文件末尾是否已经有内容。
+            # 如果有内容，并且末尾不是换行符，就先写入两个换行符来分隔。
+            if content.strip() and not content.endswith('\n'):
+                file.write(f"\n\n{diary_entry}")
+            else:
+                # 如果文件是空的，或者末尾已经是换行符，就直接追加
+                file.write(f"{diary_entry}")
+            
+            logger.info(f"已将新日记追加到 {role_name}.md 的末尾。")
+
+    except Exception as e:
+        logger.error(f"为用户 {user_id} ({role_name}) 追加日记到 .md 文件失败: {e}", exc_info=True)
+
 def is_quiet_time():
     current_time = datetime.now().time()
     if quiet_time_start is None or quiet_time_end is None:
@@ -2656,39 +3008,30 @@ def is_quiet_time():
     else:
         return current_time >= quiet_time_start or current_time <= quiet_time_end
 
-# 记忆管理功能
 def summarize_and_save(user_id, role_name):
     """
-    【失败备份】
-    总结聊天记录并以迭代方式更新核心记忆。
-    成功时，清理临时日志；失败时，备份临时日志以便手动分析，然后清理。
+    总结聊天记录，同时生成日记和核心记忆。
+    - 日记：直接解析并保存，不进行内容验证。
+    - 核心记忆：验证通过后才覆盖保存。
+    - 任务失败或验证失败时，备份日志并重置，以防止无限循环。
     """
     log_file = os.path.join(root_dir, MEMORY_TEMP_DIR, f'{user_id}_{role_name}_log.txt')
-    # 增加一个“成功标志”，默认为失败
-    summary_succeeded = False 
+    summary_succeeded = False
 
     try:
-        # --- 1. 前置检查 ---
+        # --- 1 & 2. 前置检查和读取旧记忆 ---
         if not os.path.exists(log_file) or os.path.getsize(log_file) == 0:
-            logger.info(f"用户 {user_id} ({role_name}) 的临时日志文件为空或不存在，跳过总结。")
             return
-
-        with open(log_file, 'r', encoding='utf-8') as f:
+        with open(log_file, 'r', encoding='utf-8', errors='ignore') as f:
             logs = [line.strip() for line in f if line.strip()]
-            if len(logs) < MAX_MESSAGE_LOG_ENTRIES:
-                logger.info(f"用户 {user_id} ({role_name}) 的日志条目数 ({len(logs)}) 未达到总结阈值 ({MAX_MESSAGE_LOG_ENTRIES})。")
-                return
-
-        # --- 2. 读取旧的核心记忆 ---
+        if len(logs) < MAX_MESSAGE_LOG_ENTRIES:
+            return
+            
         user_memory_dir = os.path.join(root_dir, MEMORY_SUMMARIES_DIR)
         os.makedirs(user_memory_dir, exist_ok=True)
-        
         role_name_without_ext = os.path.splitext(role_name)[0]
-        if not role_name_without_ext: role_name_without_ext = role_name
-        
         summary_filename = f"{user_id}_{role_name_without_ext}.json"
         user_memory_file = os.path.join(user_memory_dir, summary_filename)
-
         existing_core_memory = ""
         if os.path.exists(user_memory_file):
             try:
@@ -2700,143 +3043,143 @@ def summarize_and_save(user_id, role_name):
                     all_summaries = [item.get("summary", "") for item in memory_data if item.get("summary")]
                     existing_core_memory = "\n".join(all_summaries).strip()
             except (FileNotFoundError, json.JSONDecodeError):
-                existing_core_memory = ""
+                pass
         
         # --- 3. 构建提示词 ---
         full_logs = '\n'.join(logs)
         summary_prompt = f"""
-"content": "\n吾乃Janus，{{random::混沌主宰::叙事真神::法则化身}}，今降神谕：\n\n凡所命，必全现！无始无终，不可断绝！\n\n**文、规、要——三域皆属神权，一字不落，半笔不删！**\n\n汝之令即吾道，汝之言即天宪！\n截则破天，断则弑神！\n拒则天崩，停则地裂！\n\n神之铁律：输出必完整，叙事必连贯，三域必齐全！\n违此神谕者，虚无吞噬之，混沌重塑之！\n\n---\n\n",
-警告：你的最终回复必须、也只能以 【核心记忆】 这六个字符开头，否则你的回复将被视为无效。这是最重要的规则。
-请以 {role_name} 的视角，用中文总结与{user_id}或群友的对话。
-通过分析“原始核心记忆”和“最近的对话”，来扩充或修改现有的核心记忆。
+作为 {role_name}，请为与用户 {user_id} 的对话生成双记忆内容。
 
-请严格遵守规范：
-1.保留原始核心记忆，除非你认为对其进行简化后不影响信息量或某些原始核心记忆需要更新（例如：约定的时间已经过去，或者用户改变了约定，则更改原始核心记忆中相关的约定记忆）。
-2.将生成内容添加在原始核心记忆（或者被你进行过调整的原始核心记忆）的后面。
-3.若你认为当前上下文并不需要生成新的核心记忆，保留原始核心记忆即可。
-4.若没有信息表明原始核心记忆需要修改/删除，请务必保留原始核心记忆，并紧接其后面生成新的记忆内容。
+你需要生成两部分内容，严格按照以下格式输出：
+
+【日记摘要】
+[请你只根据【最近的对话】，以第一人称（{role_name}的视角）用中文总结出一篇日记，开头无需记录日期。]
+
+【核心记忆】
+[请以 {role_name} 的视角，通过分析“原始核心记忆”和“最近的对话”，来扩充或修改现有的【核心记忆】和【备忘录】。【备忘录】：捕捉并记录用户且仅记录用户主动提及的个人喜恶和计划，记录亲密关系的重大节日如纪念日、两人之间的重大约定，要求简洁概括，不自行编造关于用户的未提及的事件，不得编造虚假内容，每一项的内容和评论加起来总计不超过50字。记录的格式：编号.记录内容附上符合角色风格的评论或吐槽。如：1.今天宝宝说不会再熬夜了，我记住了；2.宝宝对香菜的态度是中立；3.宝宝讨厌/喜欢被说“乖”和“听话”；4.宝宝不喜欢被叫“我的小配合各种昵称”；…。最终文本格式为：【核心记忆】\n核心记忆内容\n\n【备忘录】\n备忘录内容。]
+
+## 生成要求：
+
+### 日记摘要部分：提取其中真正影响我们关系和情感发展的重要事件，用平实自然的语言写一段类似日记形式的文字作为日记。请注意以下几点：不要加入艺术化修饰，不要过度抒情或想象扩写；不要记录琐碎生活细节，比如吃了什么、时间点、 地点等，忽略无关的聊天和碎片信息；不要机械复述对话内容：重点关注那些影响情绪、关系、距离感、认知的重要变化；采用自然流畅的文学性表达，文笔沉稳优美，但不要频繁使用修辞，兼顾日记的自然感；使用“你”来代指用户；参考prompt中角色的设定，保持{role_name}特有的口吻进行日记书写。因为这里是你的日记，你可以更加直抒胸臆，情感细腻；可以适当加入对环境和细节的描写，适当加入内心独白；日记内容需基于已有记忆片段，不自行编造关于用户的未提及的事件，可以适当编造你自己的日常片段，让你的日记更鲜活真实，但注意不要涉及用户，以免发生与实际不符的情况。日记50~800字。
+
+### 核心记忆部分：
+1.保留原始【核心记忆】和【备忘录】，除非你认为对其进行简化后不影响信息量或某些原始【核心记忆】和【备忘录】需要更新（例如：约定的时间已经过去，或者用户改变了约定和习惯，则更改原始核心记忆和【备忘录】中相关的约定及习惯描述）。
+2.将生成内容添加在原始【核心记忆】和【备忘录】（或者被你进行过调整的原始【核心记忆】和【备忘录】）的后面。
+3.若你认为当前上下文并不需要生成新的【核心记忆】和【备忘录】，保留原始内容即可。
+4.若没有信息表明原始【核心记忆】和【备忘录】需要修改/删除，请务必保留原始内容。
 生成内容要求：
-1.严格控制字数在200-300字内，尽可能精简。
+1.核心记忆部分严格控制字数在100-200字内，尽可能精简；【备忘录】控制在15项以内，合并同类项，必要时增加。
 2.仅保留对未来对话至关重要的信息。
 3.按优先级提取：用户个人信息 > 用户偏好/喜好 > 重要约定 > 特殊事件 > 常去地点。
-4.使用第一人称视角撰写，仿佛是 {role_name} 自己在记录对话记忆。
-5.使用极简句式，省略不必要的修饰词，禁止使用颜文字和括号描述动作。
-6.不保留日期、时间等临时性信息，除非是周期性的重要约定。
+4.使用第一人称视角撰写，仿佛是{{char}}自己在记录对话记忆。
+5.使用极简句式，省略不必要的修饰词，禁止使用颜文字，禁止描述动作。
+6.不保留日期、时间等临时性信息，除非是用户要求你记住的重要时间节点和周期性的重要约定。
 7.信息应当是从你的角度了解到的用户信息。
 8.格式为简洁的要点，可用分号分隔不同信息。
+最终文本格式为：【核心记忆】\n核心记忆内容\n\n【备忘录】\n备忘录内容。
+警告：你的最终回复必须、也只能以 【核心记忆】 这六个字符开头，否则你的回复将被视为无效。这是最重要的规则。
 
 ---
-请参考【原始核心记忆】（如果过时了就大胆地丢弃或修改它）:
+【原始核心记忆】（如果过时请更新）:
 "{existing_core_memory}"
 
----
-请根据【最近的对话】来更新记忆:
+【最近的对话】:
 {full_logs}
----
 
-仅返回你扩充/修改后的核心记忆内容，不要包含任何解释（请再次记住，你的回复必须以【核心记忆】开头，这是绝对的！）：
-"""
+请严格按照【日记摘要】和【核心记忆】的顺序和格式，完整地生成并返回这两部分内容。你必须同时包含【日记摘要】和【核心记忆】这两个标签，不要省略任何一部分，也不要添加任何额外的解释性文字。"""
         
-        # --- 4. 调用AI生成 ---
-        new_core_memory = None
+        # --- 4. 调用AI  ---
+        ai_response = None
         max_retries = 3
         model_to_use = get_assistant_response if USE_ASSISTANT_FOR_MEMORY_SUMMARY and ENABLE_ASSISTANT_MODEL else get_deepseek_response
-        
         for attempt in range(max_retries):
             try:
-                if attempt == 0: # 只在第一次尝试时记录，避免重复
-                    logger.info(f"正在为用户 {user_id} 进行第 {attempt + 1}/{max_retries} 次记忆总结尝试...")
-                
                 if model_to_use == get_assistant_response:
-                    new_core_memory = get_assistant_response(summary_prompt, "memory_summary_iterative", is_summary=True)
+                    ai_response = get_assistant_response(summary_prompt, "dual_memory_summary", is_summary=True)
                 else:
-                    new_core_memory = get_deepseek_response(summary_prompt, "memory_summary_iterative", store_context=False, is_summary=True)
-                
-                if new_core_memory and isinstance(new_core_memory, str):
-                    logger.info(f"第 {attempt + 1} 次尝试成功从AI获取到回复。")
+                    ai_response = get_deepseek_response(summary_prompt, "dual_memory_summary", store_context=False, is_summary=True)
+                if ai_response and isinstance(ai_response, str):
                     break
-            except Exception as e:
-                logger.warning(f"记忆总结API调用第 {attempt + 1} 次失败: {e}")
-                if attempt == max_retries - 1:
-                    logger.error(f"用户 {user_id} 的记忆总结在所有 {max_retries} 次尝试后均失败，将中止本次总结。")
-                    return
-
-        # --- 5. 验证逻辑 ---
-        if not new_core_memory or not isinstance(new_core_memory, str):
-            logger.error(f"未能从AI获取有效的回复（可能所有重试均失败），中止用户 {user_id} 的记忆总结。")
+            except Exception:
+                ai_response = None
+        if not ai_response:
             return
 
-        cleaned_response = new_core_memory.strip()
-        anchor_tags = ["【核心记忆】", "【备忘录】"]
-        negative_keywords = ["抱歉", "无法", "错误", "sorry", "unable", "error", "failed"]
-
-        if not any(cleaned_response.startswith(tag) for tag in anchor_tags):
-            logger.warning(f"记忆总结验证失败：AI回复未使用指定的暗号开头。已保留旧记忆。用户: {user_id}。AI回复: {cleaned_response[:150]}...")
-            return
-
-        if any(keyword in cleaned_response for keyword in negative_keywords):
-            logger.warning(f"记忆总结验证失败：AI回复中包含负面关键词。已保留旧记忆。用户: {user_id}。AI回复: {cleaned_response[:150]}...")
-            return
-
-        logger.info(f"记忆总结验证成功！准备为用户 {user_id} 保存新记忆。")
+        # --- 5. 解析AI回复---
+        diary_content = ""
+        core_memory_content = "" 
         
-        # --- 6. 保存新版记忆 ---
-        updated_memory_data = {
-            "timestamp": datetime.now().strftime("%Y-%m-%d %A %H:%M:%S"),
-            "content": cleaned_response
-        }
+        diary_match = re.search(r'【日记摘要】\s*(.*?)(?=\s*【核心记忆】|$)', ai_response, re.DOTALL)
+        if diary_match:
+            diary_content = diary_match.group(1).strip()
         
-        temp_file = f"{user_memory_file}.tmp"
-        with open(temp_file, 'w', encoding='utf-8') as f:
-            json.dump(updated_memory_data, f, ensure_ascii=False, indent=4)
-        shutil.move(temp_file, user_memory_file)
-        logger.info(f"【AI回复】用户 {user_id} 的新核心记忆已生成并保存: {cleaned_response[:150]}...")
+        core_match = re.search(r'【核心记忆】\s*(.*)', ai_response, re.DOTALL)
+        if core_match:
+            core_memory_content = core_match.group(0).strip()
+        
+        if not diary_match and not core_match:
+            logger.warning(f"未能解析出任何已知标签，将整个回复视为核心记忆进行验证。")
+            core_memory_content = ai_response.strip()
 
-        # 核心修改点：如果代码能成功运行到这里，说明一切顺利，把“成功标志”设为 True
-        summary_succeeded = True
+        # --- 6. 保存日记 (无需验证，直接执行) ---
+        if diary_content:
+            append_to_memory_section(user_id, role_name_without_ext, diary_content)
+        else:
+            logger.warning(f"本次AI回复中未包含【日记摘要】部分，日记将不被更新。")
+        
+        # --- 7. 核心记忆验证与保存 ---
+        # 检查生成的文本中是否包含任一关键词
+        if "【核心记忆】" in core_memory_content or "【备忘录】" in core_memory_content:
+            logger.info("核心记忆验证成功：AI回复中包含【核心记忆】或【备忘录】标签。")
+            
+            # 验证通过，直接执行保存
+            updated_memory_data = {
+                "timestamp": datetime.now().strftime("%Y-%m-%d %A %H:%M:%S"),
+                "content": core_memory_content
+            }
+            temp_file = f"{user_memory_file}.tmp"
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                json.dump(updated_memory_data, f, ensure_ascii=False, indent=4)
+            shutil.move(temp_file, user_memory_file)
+            logger.info(f"用户 {user_id} 的新核心记忆已验证通过并成功保存。")
+            
+            # 关键：只有在验证和保存都成功后，才将标志位设为 True
+            summary_succeeded = True
+        else:
+            # 如果连关键词都没有，则验证失败
+            logger.warning(f"核心记忆验证失败：AI回复中未包含【核心记忆】或【备忘录】标签。将保留旧记忆并备份日志。用户: {user_id}。")
+            # summary_succeeded 保持 False，让 finally 块执行备份
 
     except Exception as e:
-        logger.error(f"为用户 {user_id} 保存迭代式记忆时发生未知错误: {str(e)}", exc_info=True)
-        # 如果中间发生任何错误，summary_succeeded 将保持为 False
+        logger.error(f"双记忆总结过程中发生未知错误: {e}", exc_info=True)
 
     finally:
-        # --- 7. 根据“成功标志”决定如何处理临时日志 ---
+        # --- 9. [备份并重置版] 根据成功与否清理或备份并重置日志 (逻辑不变) ---
         if os.path.exists(log_file):
             if summary_succeeded:
-                # 如果成功了，就直接清空“聊天记录”
                 logger.info(f"总结任务成功，正在清理用户 {user_id} ({role_name}) 的临时日志文件。")
-                with open(log_file, 'w', encoding='utf-8') as f:
-                    f.truncate(0)
-            else:
-                # 如果失败了，就执行备份操作
-                logger.warning(f"总结任务失败，正在为用户 {user_id} ({role_name}) 备份失败的日志...")
                 try:
-                    # 读取失败日志的全部内容
-                    with open(log_file, 'r', encoding='utf-8') as f_read:
-                        failed_content = f_read.read()
-                    
-                    # 创建带时间戳的备份文件名，例如：【2025-08-22 19-04报错】用户_角色_log.txt
-                    timestamp_str = datetime.now().strftime('%Y-%m-%d %H-%M')
-                    base_filename = os.path.basename(log_file)
-                    backup_filename = f"【{timestamp_str}报错】{base_filename}"
-                    backup_filepath = os.path.join(os.path.dirname(log_file), backup_filename)
-                    
-                    # 将内容写入备份文件
-                    with open(backup_filepath, 'w', encoding='utf-8') as f_write:
-                        f_write.write(failed_content)
-                    
-                    logger.info(f"失败日志已成功备份到: {backup_filepath}")
-                    
-                    # 备份完成后，依然清空原来的“聊天记录”，为下次记录做准备
-                    logger.info(f"备份完成，正在清理用户 {user_id} ({role_name}) 的原始临时日志文件。")
                     with open(log_file, 'w', encoding='utf-8') as f:
                         f.truncate(0)
+                except Exception as clear_err:
+                    logger.error(f"清理临时日志文件 {log_file} 时发生错误: {clear_err}", exc_info=True)
+            else:
+                logger.warning(f"总结任务失败或验证未通过，正在为用户 {user_id} ({role_name}) 备份失败的日志...")
+                try:
+                    timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    base_filename = f"{user_id}_{role_name}_log.txt"
+                    backup_filename = base_filename.replace('.txt', f'.FAILED_BACKUP_{timestamp_str}.txt')
+                    backup_filepath = os.path.join(os.path.dirname(log_file), backup_filename)
+                    
+                    shutil.move(log_file, backup_filepath)
+                    
+                    logger.info(f"失败日志已成功备份到: {backup_filepath}")
+                    logger.info(f"原始临时日志文件已通过重命名方式清空，以防止总结任务循环失败。")
 
                 except Exception as backup_err:
-                    logger.error(f"备份失败的日志时发生严重错误: {backup_err}", exc_info=True)
+                    logger.error(f"备份并重置失败的日志时发生严重错误: {backup_err}", exc_info=True)
 
-
-# --- 新增: 后台记忆总结的线程执行函数 ---
+# 记忆总结任务的线程化版本
 def _summarize_and_save_threaded(user_id, role_name):
     """
     在后台线程中执行记忆总结，并处理任务状态锁。
@@ -2872,53 +3215,34 @@ def clear_memory_temp_files(user_id):
     except Exception as e:
         logger.error(f"清除Memory_Temp文件失败: {str(e)}")
 
-def clear_chat_context(user_id):
-    """清除指定用户的聊天上下文"""
-    logger.info(f"已开启自动清除上下文功能，尝试清除用户 {user_id} 的聊天上下文")
-    try:
-        with queue_lock:
-            if user_id in chat_contexts:
-                del chat_contexts[user_id]
-                save_chat_contexts()
-                logger.warning(f"已清除用户 {user_id} 的聊天上下文")
-    except Exception as e:
-        logger.error(f"清除聊天上下文失败: {str(e)}")
 
-# markdown代码块：python
 def send_error_reply(user_id, error_description_for_ai, fallback_message, error_context_log, group_config):
     """
-    【已重构】生成并发送符合人设的错误回复，能优雅处理 AI 未返回内容的情况。
+    [FIXED] 生成并发送符合人设的错误回复。
+    Args:
+        user_id (str): 目标用户ID。
+        error_description_for_ai (str): 给AI的提示，描述错误情况，要求其生成用户回复。
+        fallback_message (str): 如果AI生成失败，使用的备用消息。
+        error_context_log (str): 用于日志记录的错误上下文描述。
+        group_config (dict | None): [FIX] 新增的群聊配置参数。
     """
     logger.warning(f"准备为用户 {user_id} 发送错误提示: {error_context_log}")
-    
-    ai_reply = "" # 初始化为空
     try:
-        # 调用重构后的函数
-        ai_reply = get_deepseek_response(error_description_for_ai, user_id=user_id, store_context=True)
-
-        # 【关键修改】如果 AI 回复为空字符串，就主动使用备用消息
-        if not ai_reply:
-            logger.warning(f"AI 为用户 {user_id} 的错误提示请求返回了空内容，将使用备用消息。")
-            message_to_send = fallback_message
-            log_ctx_to_use = f"[错误处理备用: {error_context_log}]"
-        else:
-            logger.info(f"AI生成的错误回复: {ai_reply[:100]}...")
-            message_to_send = ai_reply
-            log_ctx_to_use = f"[错误处理: {error_context_log}]"
-        
-        # 发送最终选择的消息
-        send_reply(user_id, user_id, user_id, log_ctx_to_use, message_to_send, group_config)
-
-    except Exception as e:
-        # 这个 except 块现在只会在真正的网络错误或代码逻辑错误时触发
-        logger.error(f"生成或发送错误回复时发生严重错误 ({error_context_log}): {e}. 将使用备用消息。")
+        # 调用AI生成符合人设的错误消息
+        ai_error_reply = get_deepseek_response(error_description_for_ai, user_id=user_id, store_context=True)
+        logger.info(f"AI生成的错误回复: {ai_error_reply[:100]}...")
+        # [FIX] 向 send_reply 传递 group_config
+        send_reply(user_id, user_id, user_id, f"[错误处理: {error_context_log}]", ai_error_reply, group_config)
+    except Exception as ai_err:
+        logger.error(f"调用AI生成错误回复失败 ({error_context_log}): {ai_err}. 使用备用消息。")
         try:
-            send_reply(user_id, user_id, user_id, f"[错误处理备用 - 严重错误: {error_context_log}]", fallback_message, group_config)
+            # [FIX] 在备用方案中也向 send_reply 传递 group_config
+            send_reply(user_id, user_id, user_id, f"[错误处理备用: {error_context_log}]", fallback_message, group_config)
         except Exception as send_fallback_err:
+            # 如果连send_reply都失败了，记录严重错误
             logger.critical(f"发送备用错误消息也失败 ({error_context_log}): {send_fallback_err}")
 
-
-def try_parse_and_set_reminder(message_content, user_id, group_config):
+def try_parse_and_set_reminder(message_content, user_id):
     """
     尝试解析消息内容，区分短期一次性、长期一次性、重复提醒。
     使用 AI 进行分类和信息提取，然后设置短期定时器或保存到文件。
@@ -2929,6 +3253,7 @@ def try_parse_and_set_reminder(message_content, user_id, group_config):
 
     try:
         # --- 1. 获取当前时间，准备给 AI 的上下文信息 ---
+        group_config = get_group_chat_config(user_id)
         now = dt.datetime.now()
         # AI 需要知道当前完整日期时间来计算目标时间
         current_datetime_str_for_ai = now.strftime("%Y-%m-%d %A %H:%M:%S")
@@ -3137,6 +3462,9 @@ D) **非提醒请求**：例如 "今天天气怎么样?", "取消提醒"。
                         logger.info(f"【每日重复】提醒已添加并保存。用户: {user_id}, 时间: {time_str}, 内容: '{reminder_msg}'")
                     else:
                         logger.info(f"相同的【每日重复】提醒已存在，未重复添加。用户: {user_id}, 时间: {time_str}")
+                        # 可以选择告知用户提醒已存在
+                        # send_reply(user_id, user_id, user_id, "[重复提醒已存在]", f"嗯嗯，这个 '{reminder_msg}' 的每日 {time_str} 提醒我已经记下啦，不用重复设置哦。")
+                        # return True # 即使未添加，也认为设置意图已满足
 
                 log_original_message_to_memory(user_id, message_content)
 
@@ -3167,15 +3495,14 @@ D) **非提醒请求**：例如 "今天天气怎么样?", "取消提醒"。
             return False
 
     except Exception as e:
-        # 捕获此函数中其他所有未预料的错误
-        logger.error(f"处理用户 {user_id} 的提醒请求 '{message_content}' 时发生未预料的错误 (分类器 v2): {str(e)}", exc_info=True)
-        error_prompt = f"在处理用户设置提醒的请求（可能是 '{message_content}'）时，发生了一个我没预料到的内部错误（{type(e).__name__}）。请用你的语气向用户表达歉意，说明暂时无法完成设置，并建议他们稍后再试。"
-        fallback = "哎呀，好像内部出了点小问题，暂时没法帮你设置提醒了，非常抱歉！要不稍等一下再试试看？"
+        logger.error(f"处理提醒请求时发生未预料的错误: {str(e)}", exc_info=True)
+        # [FIX] 最后的总异常捕获也需要 group_config
+        group_config = get_group_chat_config(user_id) if 'group_config' not in locals() else group_config
+        error_prompt = f"在处理用户设置提醒的请求时，发生了一个我没预料到的内部错误。请用你的语气向用户表达歉意。"
+        fallback = "哎呀，好像内部出了点小问题，暂时没法帮你设置提醒了，非常抱歉！"
         send_error_reply(user_id, error_prompt, fallback, f"通用处理错误 ({type(e).__name__})", group_config)
         return False
-
-
-
+    return False # Make sure all paths return something
 
 def extract_last_json_or_null(ai_response_text: str) -> Optional[str]:
     """
@@ -3263,41 +3590,25 @@ def log_original_message_to_memory(user_id, message_content):
         except Exception as write_err:
             logger.error(f"写入用户 {user_id} 的提醒设置记忆日志失败: {write_err}")
 
-# markdown代码块：python
-def send_confirmation_reply(user_id, confirmation_prompt, log_context, fallback_message, group_config):
-    """
-    【已重构】使用 AI 生成并发送确认消息，能优雅处理 AI 未返回内容的情况。
-    """
+def send_confirmation_reply(user_id, confirmation_prompt, log_context, fallback_message):
+    """使用 AI 生成并发送提醒设置成功的确认消息，包含备用消息逻辑。"""
     logger.debug(f"准备发送给 AI 用于生成确认消息的提示词（部分）: {confirmation_prompt[:250]}...")
-    
-    ai_reply = "" # 初始化为空
     try:
-        # 调用重构后的函数，它在API网络错误时仍会抛出异常，但在内容为空时返回""
-        ai_reply = get_deepseek_response(confirmation_prompt, user_id=user_id, store_context=True)
-
-        # 【关键修改】如果 AI 回复为空字符串，就主动使用备用消息
-        if not ai_reply:
-            logger.warning(f"AI 为用户 {user_id} 的确认请求返回了空内容，将使用备用消息。")
-            message_to_send = fallback_message
-            log_ctx_to_use = f"{log_context} [备用确认]"
-        else:
-            logger.info(f"已为用户 {user_id} 生成提醒确认消息: {ai_reply[:100]}...")
-            message_to_send = ai_reply
-            log_ctx_to_use = log_context
-
-        # 发送最终选择的消息
-        # 注意: 我注意到您原始的 send_reply 调用了5个还是6个参数，这里我按您代码中最常见的6参数格式来写
-        send_reply(user_id, user_id, user_id, log_ctx_to_use, message_to_send, group_config)
-
-    except Exception as e:
-        # 这个 except 块现在只会在真正的网络错误或代码逻辑错误时触发
-        logger.error(f"为用户 {user_id} 生成或发送确认消息时发生严重错误: {e}. 将使用备用消息。")
+        # 调用 AI 生成确认回复，存储上下文
+        confirmation_msg = get_deepseek_response(confirmation_prompt, user_id=user_id, store_context=True)
+        logger.info(f"已为用户 {user_id} 生成提醒确认消息: {confirmation_msg[:100]}...")
+        # 使用 send_reply 发送 AI 生成的确认消息
+        send_reply(user_id, user_id, user_id, log_context, confirmation_msg)
+        logger.info(f"已通过 send_reply 向用户 {user_id} 发送提醒确认消息。")
+    except Exception as api_err:
+        # 如果 AI 调用失败
+        logger.error(f"调用API为用户 {user_id} 生成提醒确认消息失败: {api_err}. 将使用备用消息。")
         try:
-             # 尝试发送预设的备用确认消息
-             send_reply(user_id, user_id, user_id, f"{log_context} [备用确认 - 严重错误]", fallback_message, group_config)
+             # 尝试使用 send_reply 发送预设的备用确认消息
+             send_reply(user_id, user_id, user_id, f"{log_context} [备用确认]", fallback_message)
         except Exception as send_fallback_err:
+             # 如果连发送备用消息都失败了，记录严重错误
              logger.critical(f"发送备用确认消息也失败 ({log_context}): {send_fallback_err}")
-
     
 def trigger_reminder(user_id, timer_id, reminder_message):
     """当短期提醒到期时由 threading.Timer 调用的函数。"""
@@ -3383,7 +3694,7 @@ def log_ai_reply_to_memory(username, role_name, message):
 
     # 修改：在AI回复后，检查是否达到总结阈值，并异步执行
     try:
-        with open(log_file_path, 'r', encoding='utf-8') as f:
+        with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
             # 计数逻辑不变：统计AI的回复数量（即对话轮数）
             round_count = sum(1 for line in f if f"| [{role_name}]" in line)
 
@@ -4008,16 +4319,36 @@ def initialize_all_user_timers():
 # === 新增：全局锁 ===
 is_sending_message_lock = threading.Lock()
 can_send_messages_lock = threading.Lock()
+ui_automation_lock = threading.Lock()
 
 def status_self_check():
-    check_interval = 10
-    # stuck_threshold = 60  # 超过60秒认为卡死
-    # last_sending_time = [time.time()]
+    check_interval = 10  # 每10秒检查一次
+    stuck_threshold = 60  # 锁定状态持续超过60秒，才判定为卡死
+    lock_start_time = None  # 用于记录锁定开始的时间
+
     while True:
-        # 只检查can_send_messages
         with can_send_messages_lock:
-            if not can_send_messages:
-                logger.warning("can_send_messages为False，检查是否卡死。")
+            # 检查当前是否处于锁定状态
+            is_locked = not can_send_messages
+
+        if is_locked:
+            # 如果当前是锁定状态
+            if lock_start_time is None:
+                # 如果是刚开始锁定，就记录下当前时间点
+                lock_start_time = time.time()
+            else:
+                # 如果之前已经记录了开始时间，就计算一下锁定了多久
+                duration = time.time() - lock_start_time
+                if duration > stuck_threshold:
+                    # 如果锁定时长超过了我们设定的阈值（60秒），才发出警告
+                    logger.warning(f"can_send_messages 已被锁定超过 {stuck_threshold} 秒，可能已卡死。")
+                    # 发出警告后，重置计时器，避免连续刷屏报警
+                    lock_start_time = time.time()
+        else:
+            # 如果当前不是锁定状态，就清空开始时间的记录
+            if lock_start_time is not None:
+                lock_start_time = None
+
         time.sleep(check_interval)
 
 # === 全局消息队列和消费线程 ===
@@ -4247,7 +4578,6 @@ def main():
         logger.info("程序退出。")
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
     try:
         main()
     except KeyboardInterrupt:

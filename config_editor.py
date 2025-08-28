@@ -402,7 +402,8 @@ def submit_config():
             'ENABLE_GROUP_AT_REPLY', 'ENABLE_GROUP_KEYWORD_REPLY','GROUP_KEYWORD_REPLY_IGNORE_PROBABILITY', 'REMOVE_PARENTHESES',
             'ENABLE_ASSISTANT_MODEL', 'USE_ASSISTANT_FOR_MEMORY_SUMMARY',
             'IGNORE_GROUP_CHAT_FOR_AUTO_MESSAGE', 'ENABLE_SENSITIVE_CONTENT_CLEARING',
-            'ENABLE_GROUP_AT_REPLY_IN_REPLIES'
+            'ENABLE_GROUP_AT_REPLY_IN_REPLIES',
+            'ENABLE_TEXT_COMMANDS'
         ]
         for field in boolean_fields:
             new_values_for_config_py[field] = field in request.form
@@ -1617,7 +1618,8 @@ def get_default_config():
         "USE_ASSISTANT_FOR_MEMORY_SUMMARY": False,
         "IGNORE_GROUP_CHAT_FOR_AUTO_MESSAGE": False,
         "ENABLE_SENSITIVE_CONTENT_CLEARING": True,
-        "ENABLE_GROUP_AT_REPLY_IN_REPLIES": True
+        "ENABLE_GROUP_AT_REPLY_IN_REPLIES": True,
+        "ENABLE_TEXT_COMMANDS": False
     }
 
 def validate_config():

@@ -2994,6 +2994,7 @@ if (switchPromptModal) {
                 <li><a href="#" data-target="section-memory">记忆功能配置</a></li>
                 <li><a href="#" data-target="section-active-message">主动消息配置</a></li>
                 <li><a href="#" data-target="section-reminders">定时器与提醒</a></li>
+                <li><a href="#" data-target="section-commands">指令设置</a></li>
                 <li><a href="#" data-target="section-scheduled-restart">定时重启Bot配置</a></li>
                 <li><a href="#" data-target="section-web-editor">网页编辑器配置</a></li>
                 <li><a href="#" data-target="section-logs">程序运行日志</a></li>
@@ -3515,6 +3516,32 @@ if (switchPromptModal) {
                         <div id="reminder-list" style="margin-bottom:10px;">
                         </div>
                         <button type="button" onclick="addReminder()">添加提醒</button>
+                    </div>
+                </div>
+
+                <div id="section-commands" class="content-panel">
+                    <h2>指令设置</h2>
+                    <div class="form-group">
+                        <label for="enable_text_commands" class="form-label" data-bs-toggle="tooltip" data-bs-placement="top" title="开启后，可在聊天中直接发送以下以“/”开头的指令进行控制。">启用文字指令</label>
+                        <div class="switch-container">
+                            <label class="switch">
+                                <input type="checkbox" id="enable_text_commands" name="ENABLE_TEXT_COMMANDS" {% if config.get('ENABLE_TEXT_COMMANDS') %}checked{% endif %}>
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>可用指令说明</label>
+                        <small>
+                            <ul>
+                                <li><code>/重启</code> 或 <code>/re</code>: 重新启动程序 (将先保存必要数据再重启)。</li>
+                                <li><code>/关闭主动消息</code> 或 <code>/da</code>: 关闭主动发消息功能。</li>
+                                <li><code>/开启主动消息</code> 或 <code>/ea</code>: 开启主动发消息功能。</li>
+                                <li><code>/清除临时记忆</code> 或 <code>/cl</code>: 清理当前聊天窗口对应的短期上下文与临时记忆。适用于AI回复出现异常 (如乱码或思维链) 时使用。</li>
+                                <li><code>/允许语音通话</code> 或 <code>/ev</code>: 允许使用语音通话进行定时提醒 (仅私聊提醒有效)。</li>
+                                <li><code>/禁止语音通话</code> 或 <code>/dv</code>: 禁止使用语音通话进行定时提醒。</li>
+                            </ul>
+                        </small>
                     </div>
                 </div>
 
