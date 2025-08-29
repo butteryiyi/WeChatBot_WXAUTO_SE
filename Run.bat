@@ -2,32 +2,143 @@
 setlocal enabledelayedexpansion
 chcp 65001 >nul
 
-:: --- [保留] 原有的微信版本和 Python 环境检查部分 ---
-:: (此部分无需改动，保持原样即可)
+:: ---------------------------
+:: 检查微信版本
+:: ---------------------------
+:: 依次检测 Weixin 和 WeChat 注册表路径，优先 Weixin
+:: ---------------------------
 set "wxversion="
-for %%K in ("HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Weixin", "HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\WeChat") do (for /f "tokens=2,*" %%i in ('reg query %%K /v DisplayVersion 2^>nul ^| find "DisplayVersion"') do (set "wxversion=%%j" & set "RegPath=%%K" & goto :found_wxversion))
-if not defined wxversion (echo ⚠️ 警告：未检测到微信安装或无法读取注册表！ & goto :check_python)
+rem 优先依次检测 Weixin 和 WeChat 的 DisplayVersion
+for %%K in (
+    "HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Weixin"
+    "HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\WeChat"
+) do (
+    for /f "tokens=2,*" %%i in ('reg query %%K /v DisplayVersion 2^>nul ^| find "DisplayVersion"') do (
+        set "wxversion=%%j"
+        set "RegPath=%%K"
+        goto :found_wxversion
+    )
+)
+if not defined wxversion (
+    echo ⚠️ 警告：未检测到微信安装或无法读取注册表！
+    echo    这可能是由于以下原因：
+    echo    1. 微信未正确安装
+    echo    2. 注册表访问权限不足
+    echo    3. 微信版本过老或过新
+    echo    4. 您使用的是便携版微信
+    echo.
+    echo    程序将跳过微信版本检查并继续运行。
+    echo    如果程序启动后无法控制微信，请下载微信3.9版本：https://dldir1v6.qq.com/weixin/Windows/WeChatSetup.exe
+    echo.
+    echo 🔄3秒后自动继续...
+    timeout /t 3 /nobreak >nul
+    goto :check_python
+)
 :found_wxversion
-if not defined wxversion (echo ⚠️ 警告：无法获取微信版本号！ & goto :check_python)
-for /f "tokens=1 delims=." %%a in ("!wxversion!") do (set "major=%%a")
-if !major! lss 3 (echo ❌ 当前微信版本 !wxversion!，版本过低！ & pause)
-if !major! geq 4 (echo ❌ 当前微信版本 !wxversion!，版本过高！ & pause)
+
+if not defined wxversion (
+    echo ⚠️ 警告：无法获取微信版本号！
+    echo    程序将跳过微信版本检查并继续运行，但建议检查微信安装状态。
+    echo    如果程序启动后无法控制微信，请下载微信3.9版本：https://dldir1v6.qq.com/weixin/Windows/WeChatSetup.exe
+    echo.
+    echo 🔄3秒后自动继续...
+    timeout /t 3 /nobreak >nul
+    goto :check_python
+)
+
+:: 解析主版本号
+for /f "tokens=1 delims=." %%a in ("!wxversion!") do (
+    set "major=%%a"
+)
+
+:: 只判断主版本
+if !major! lss 3 (
+    echo ❌ 当前微信版本 !wxversion!，版本过低！
+    echo    请下载微信3.9版本
+    echo    下载地址：https://dldir1v6.qq.com/weixin/Windows/WeChatSetup.exe
+    echo.
+    echo 🔄如果您确信已经安装了正确版本的微信，请按下键盘任意键继续运行程序，否则关闭窗口退出。
+    pause
+    goto :check_python
+)
+if !major! geq 4 (
+    echo ❌ 当前微信版本 !wxversion!，版本过高！
+    echo    软件暂不支持微信4.x及以上版本，可能导致兼容性问题
+    echo    请下载微信3.9版本
+    echo    下载地址：https://dldir1v6.qq.com/weixin/Windows/WeChatSetup.exe
+    echo.
+    echo 🔄如果您确信已经安装了正确版本的微信，请按下键盘任意键继续运行程序，否则关闭窗口退出。
+    pause
+    goto :check_python
+)
+
 echo ✅ 微信版本检查通过：!wxversion!
 
 :check_python
+
+:: ---------------------------
+:: 检查 Python 是否安装
+:: ---------------------------
 echo 🔍 检查Python环境...
 python --version >nul 2>&1
-if %errorlevel% neq 0 (echo ❌ Python 未安装或未添加到系统PATH！ & pause & exit /b 1)
+if %errorlevel% neq 0 (
+    echo ❌ Python 未安装或未添加到系统PATH！
+    echo    请前往官网下载并安装 Python 3.9-3.12 版本
+    echo    下载地址：https://www.python.org/downloads/
+    echo    ⚠️ 安装时请勾选"Add Python to PATH"选项
+    pause
+    exit /b 1
+)
+
+:: 获取 Python 版本
 for /f "tokens=2,*" %%i in ('python --version 2^>^&1') do set "pyversion=%%i"
 echo 检测到Python版本：%pyversion%
-for /f "tokens=1,2,3 delims=." %%a in ("%pyversion%") do (set "py_major=%%a" & set "py_minor=%%b")
-if "%py_major%" neq "3" ( echo ❌ 不支持的Python主版本 & pause & exit /b 1 )
-if %py_minor% lss 9 ( echo ❌ Python版本过低 & pause & exit /b 1 )
-if %py_minor% gtr 12 ( echo ❌ Python版本过高 & pause & exit /b 1 )
-echo ✅ Python版本检查通过：%pyversion%
 
-:: --- [保留] 依赖安装部分 ---
-echo 🔄 正在安装依赖...
+:: 解析版本号
+for /f "tokens=1,2,3 delims=." %%a in ("%pyversion%") do (
+    set "py_major=%%a"
+    set "py_minor=%%b"
+    set "py_patch=%%c"
+)
+
+:: 检查主版本号
+if "%py_major%" neq "3" (
+    echo ❌ 不支持的Python主版本：%pyversion%
+    echo    支持版本：Python 3.9-3.12
+    echo    当前版本：Python %pyversion%
+    pause
+    exit /b 1
+)
+
+:: 检查次版本号范围 (3.9-3.12)
+if %py_minor% lss 9 (
+    echo ❌ Python版本过低：%pyversion%
+    echo    最低要求：Python 3.9
+    echo    当前版本：Python %pyversion%
+    echo    请升级Python版本
+    pause
+    exit /b 1
+)
+if %py_minor% gtr 12 (
+    echo ❌ Python版本过高：%pyversion%
+    echo    支持版本：Python 3.9-3.12
+    echo    当前版本：Python %pyversion%
+    echo    可能存在兼容性问题，建议降级
+    pause
+    exit /b 1
+)
+
+echo ✅ Python版本检查通过：%pyversion% (满足3.9-3.12要求)
+
+:: ---------------------------
+:: 检查 pip 是否存在
+:: ---------------------------
+python -m pip --version >nul 2>&1
+if %errorlevel% neq 0 (
+    echo ❌ pip 未安装，请先安装 pip。
+    pause
+    exit /b 1
+)
 
 :: ---------------------------
 :: 选择最快的 pip 源
@@ -35,41 +146,43 @@ echo 🔄 正在安装依赖...
 echo 🚀 正在检测可用镜像源...
 
 :: 阿里源
-python -m pip install --upgrade pip --index-url https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com >nul 2>&1
+python -m pip install --upgrade pip --index-url https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com
 if !errorlevel! equ 0 (
     set "SOURCE_URL=https://mirrors.aliyun.com/pypi/simple/"
     set "TRUSTED_HOST=mirrors.aliyun.com"
     echo ✅ 使用阿里源
-    goto :INSTALL_DEPS
+    goto :INSTALL
 )
 
 :: 清华源
-python -m pip install --upgrade pip --index-url https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn >nul 2>&1
+python -m pip install --upgrade pip --index-url https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
 if !errorlevel! equ 0 (
     set "SOURCE_URL=https://pypi.tuna.tsinghua.edu.cn/simple"
     set "TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn"
     echo ✅ 使用清华源
-    goto :INSTALL_DEPS
+    goto :INSTALL
 )
 
 :: 官方源
-python -m pip install --upgrade pip --index-url https://pypi.org/simple >nul 2>&1
+python -m pip install --upgrade pip --index-url https://pypi.org/simple
 if !errorlevel! equ 0 (
     set "SOURCE_URL=https://pypi.org/simple"
     set "TRUSTED_HOST="
     echo ✅ 使用官方源
-    goto :INSTALL_DEPS
+    goto :INSTALL
 )
 
 echo ❌ 无可用镜像源，请检查网络
 pause
 exit /b 1
 
-:INSTALL_DEPS
+:INSTALL
+echo 🔄 正在安装依赖...
+
 if "!TRUSTED_HOST!"=="" (
-    python -m pip install -r requirements.txt -f ./libs --index-url !SOURCE_URL! >nul 2>&1
+    python -m pip install -r requirements.txt -f ./libs --index-url !SOURCE_URL!
 ) else (
-    python -m pip install -r requirements.txt -f ./libs --index-url !SOURCE_URL! --trusted-host !TRUSTED_HOST! >nul 2>&1
+    python -m pip install -r requirements.txt -f ./libs --index-url !SOURCE_URL! --trusted-host !TRUSTED_HOST!
 )
 
 if !errorlevel! neq 0 (
@@ -79,114 +192,34 @@ if !errorlevel! neq 0 (
 )
 
 echo ✅ 所有依赖安装成功！
+
+:: 清屏
 cls
 
-:: =================================================================
-:: 【 新增 】GitHub Release 自动更新检查（可选，本地无 Git 时会跳过）
-:: - 优先从 git remote 获取仓库地址；否则尝试读取 REPO.txt（内容形如 owner/repo）
-:: - 本地当前版本从 version.txt 读取（不存在则跳过对比）
-:: - 若检测到有新版本，提示是否打开最新 Release 页面
-:: =================================================================
-set "LATEST_VERSION="
-set "REPO_SLUG="
-set "CURRENT_VERSION="
+:: ---------------------------
+:: 检查程序更新
+:: ---------------------------
 
-for /f "tokens=1,2 delims==" %%A in ('powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$ErrorActionPreference='SilentlyContinue'; ^
-    $origin=(git config --get remote.origin.url) 2>$null; ^
-    if(-not $origin -and (Test-Path 'REPO.txt')){ $origin=(Get-Content 'REPO.txt' -Raw).Trim() } ^
-    $repo=$null; ^
-    if($origin -match 'github\.com[:/](.+?)/(.*?)(\.git)?$'){ $repo=$Matches[1] + '/' + $Matches[2].TrimEnd('.git') } ^
-    elseif($origin -match '^(?<o>[^/]+/[^/]+)$'){ $repo=$Matches['o'] } ^
-    $current=(Test-Path 'version.txt') ? ((Get-Content 'version.txt' -Raw).Trim()) : ''; ^
-    if($repo){ ^
-        $api='https://api.github.com/repos/'+$repo+'/releases/latest'; ^
-        try{ $resp=Invoke-RestMethod -UseBasicParsing -Headers @{ 'User-Agent'='curl'; 'X-GitHub-Api-Version'='2022-11-28'} -Uri $api } catch {} ^
-        $latest = $null; if($resp){ $latest = if($resp.tag_name){$resp.tag_name}else{$resp.name} } ^
-        if($latest){ Write-Output ('LATEST=' + $latest) } ^
-        Write-Output ('REPO=' + $repo) ^
-        Write-Output ('CURRENT=' + $current) ^
-    } else { Write-Output 'REPO=' } ^
-"') do (
-    if "%%A"=="LATEST" set "LATEST_VERSION=%%B"
-    if "%%A"=="REPO" set "REPO_SLUG=%%B"
-    if "%%A"=="CURRENT" set "CURRENT_VERSION=%%B"
-)
+echo 🟢 检查程序更新...
 
-if not defined REPO_SLUG (
-    echo ⚠️ 未能识别 GitHub 仓库（缺少 git 或 REPO.txt）。跳过更新检查。
-) else (
-    if defined LATEST_VERSION (
-        if defined CURRENT_VERSION (
-            for /f %%V in ('powershell -NoProfile -Command "try{ if([version]'%CURRENT_VERSION%' -lt [version]'%LATEST_VERSION%'){ exit 1 } else { exit 0 } } catch { if('%CURRENT_VERSION%' -ne '%LATEST_VERSION%'){ exit 1 } else { exit 0 } }"') do set "CMP=%%V"
-        ) else (
-            set "CMP=1"
-        )
-        if not defined CMP set "CMP=1"
-        if "%CMP%"=="1" (
-            echo 🔔 检测到新版本：%LATEST_VERSION%（当前：%CURRENT_VERSION%）
-            choice /m "是否打开最新 Release 页面以查看更新？" /c YN /n
-            if errorlevel 2 (
-                echo 已跳过打开浏览器。
-            ) else (
-                start "" https://github.com/%REPO_SLUG%/releases/latest
-            )
-        ) else (
-            echo ✅ 已是最新版本（当前：%CURRENT_VERSION%，最新：%LATEST_VERSION%）。
-        )
-    ) else (
-        echo ⚠️ 无法从 GitHub 获取最新版本信息。可能是网络或 API 受限。
-    )
-)
+python updater.py
+
+echo ✅ 程序更新完成！
+
+:: 清屏
+cls
 
 :: ---------------------------
-:: 本地更新器回退机制
+:: 启动朋友圈程序 (5002端口)
 :: ---------------------------
-echo 🔄 运行本地更新器...
-if exist "updater.py" (
-    python updater.py
-    echo ✅ 本地更新器运行完成
-) else (
-    echo ℹ️ 未找到本地更新器 updater.py，跳过本地更新
-)
+echo 🟢 启动朋友圈程序 (端口5002)...
+start "朋友圈程序 - 端口5002" cmd /k "python moments_app.py"
 
-:: =================================================================
-::【【【【【【【【【【【【【 优化后的启动逻辑 】】】】】】】】】】】】】
-:: =================================================================
-echo.
-echo =========================================================
-echo =           正在启动所有服务并打开浏览器...             =
-echo =========================================================
-echo.
+:: 等待朋友圈程序启动
+timeout /t 3 /nobreak >nul
 
-echo 🟢 [1/3] 正在新窗口中独立启动 AI 朋友圈服务 (端口 5002)...
-:: 使用 START 在一个独立的、有标题的新窗口中运行朋友圈服务
-START "AI Moments Service (Port 5002)" cmd /c "python moments_app.py"
-
-echo.
-echo    ⏳ 正在等待服务初始化，请稍候 5 秒钟...
-timeout /t 5 /nobreak >nul
-
-echo.
-echo 🟢 [2/3] 正在默认浏览器中打开两个服务的网页...
-:: 使用 start 命令打开URL，空引号""是防止URL被误认为窗口标题
-start "" http://localhost:5002
-
-echo.
-echo =========================================================
-echo.
-echo 🟢 [3/3] 正在此窗口中运行主程序 (配置编辑器, 端口 5000)...
-echo.
-echo    ✨ 所有服务均已启动！
-echo.
-echo    - 配置编辑器运行于: http://localhost:5000
-echo    - AI 朋友圈运行于: http://localhost:5002
-echo.
-echo    - 一个名为 "AI Moments Service" 的新窗口已经打开，这是朋友圈服务，可以最小化但不要关闭。
-echo    - ⚠️ 请保持本窗口开启，关闭它将终止主程序服务！
-echo.
-echo =========================================================
-echo.
-
-:: 直接在此窗口运行主程序，此命令会一直执行，直到你手动关闭本窗口
-python config_editor.py
+:: ---------------------------
+:: 启动主程序
+:: ---------------------------
+echo 🟢 启动主程序...
+python config_editor.py 
