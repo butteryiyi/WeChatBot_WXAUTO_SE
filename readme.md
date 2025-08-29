@@ -4,8 +4,10 @@
   <strong>这是一个为女性用户优化的智能微信聊天机器人，致力于提供更细腻、更拟人化的情感陪伴。</strong>
   <br />
   <br />
-  <a href="https://github.com/butteryiyi/WeChatBot_WXAUTO_SE/stargazers"><img src="https://img.shields.io/github/stars/butteryiyi/WeChatBot_WXAUTO_SE?style=for-the-badge&logo=starship&color=ff69b4" alt="Stars"></a>
+  <!-- 4. GitHub信息 -->
+  <a href="https://github.com/butteryiyi/WeChatBot_WXAUTO_SE/stargazers"><img src="https://img.shields.io/github/stars/butteryiyi/WeChatBot_WXAUTO_SE?style=for-the-badge&logo=starship&color=5c7cfa" alt="Stars"></a>
   <a href="https://github.com/butteryiyi/WeChatBot_WXAUTO_SE/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=for-the-badge" alt="License"></a>
+  <!-- 5. 你的QQ群 -->
   <a href="https://qm.qq.com/q/3edcyXqmTS"><img src="https://img.shields.io/badge/QQ群-151616066-12B7F3?style=for-the-badge&logo=tencentqq" alt="Community"></a>
 </p>
 
@@ -273,6 +275,7 @@
 <p>感谢同行，感谢遇见。</p >
 
 </div>
+
 
 
 
