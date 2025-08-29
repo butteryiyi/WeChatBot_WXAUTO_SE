@@ -1556,6 +1556,403 @@ def recall_message_threaded(chat_name: str, message_content: str):
 
 # ==================== 撤回消息功能区 结束 ====================
 
+# ==================== 引用消息功能区 开始 ====================
+
+def quote_message_threaded(chat_name: str, message_content: str, additional_text: str = "", message_type: str = None):
+    """
+    执行引用消息操作。
+    
+    Args:
+        chat_name: 聊天窗口名称
+        message_content: 要引用的消息内容
+        additional_text: 引用后要添加的额外文本内容
+        message_type: 消息类型，"user" 表示用户消息，"ai" 表示AI消息，None 表示智能检测
+    """
+    global can_send_messages
+    chat_window_control = None
+    
+    # 等待其他消息发送完成，避免冲突
+    with can_send_messages_lock:
+        if not can_send_messages:
+            logger.info(f"[引用消息任务] 检测到其他消息正在发送，等待完成...")
+            # 等待其他消息发送完成
+            max_wait_time = 30  # 最大等待30秒
+            wait_start = time.time()
+            while not can_send_messages and (time.time() - wait_start) < max_wait_time:
+                time.sleep(0.5)
+        
+        # 设置消息发送状态为忙碌，防止其他消息干扰
+        original_can_send_messages = can_send_messages
+        can_send_messages = False
+    
+    try:
+        logger.info(f"[引用消息任务] 子线程启动：准备在聊天 '{chat_name}' 中引用消息: '{message_content[:50]}...'")
+        
+        wx.ChatWith(chat_name)
+        time.sleep(3.0)  # 增加等待时间，确保消息发送完成并避免与其他操作冲突
+        
+        uia.uiautomation.SetGlobalSearchTimeout(5.0)
+        logger.info(f"[引用消息任务] 正在寻找名为 '{chat_name}' 的独立聊天窗口...")
+        chat_window_control = uia.WindowControl(Name=chat_name, searchDepth=1)
+        
+        if not chat_window_control.Exists():
+            logger.error(f"[引用消息任务] 失败：找不到名为 '{chat_name}' 的独立聊天窗口。")
+            return
+            
+        logger.info(f"[引用消息任务] 成功锁定目标操作窗口: '{chat_window_control.Name}'")
+        chat_window_control.SetActive()
+        chat_window_control.SetTopmost(True)
+        time.sleep(0.5)
+        
+        message_list = chat_window_control.ListControl(Name='消息')
+        if not message_list.Exists():
+            logger.error(f"[引用消息任务] 失败：在 '{chat_name}' 窗口中找不到 '消息' 列表控件。")
+            return
+            
+        # 获取消息列表
+        all_items = message_list.GetChildren()
+        logger.info(f"[引用消息任务] 获取到 {len(all_items)} 个消息项")
+        
+        if not all_items:
+            logger.warning("[引用消息任务] 消息列表为空，可能需要等待消息加载")
+            time.sleep(3)
+            all_items = message_list.GetChildren()
+            logger.info(f"[引用消息任务] 重新获取到 {len(all_items)} 个消息项")
+        
+        target_message_item = None
+        list_rect = message_list.BoundingRectangle
+        pane_center_x = list_rect.left + list_rect.width() // 2
+        logger.info(f"[引用消息任务] 消息列表区域: left={list_rect.left}, width={list_rect.width()}, center={pane_center_x}")
+        
+        # 寻找匹配的消息
+        matching_messages = []
+        
+        for item in reversed(all_items):
+            try:
+                item_name = item.Name
+                if not item_name:
+                    continue
+                
+                # 获取消息坐标信息
+                item_rect = item.BoundingRectangle
+                item_center_x = item_rect.xcenter() if hasattr(item_rect, 'xcenter') else (item_rect.left + item_rect.width() // 2)
+                item_left = item_rect.left
+                item_right = item_rect.right
+                
+                # 检查是否包含要引用的消息内容
+                # 改进的匹配逻辑：更宽松和智能的匹配
+                
+                # 清理要搜索的消息内容
+                cleaned_search_content = message_content.strip()
+                # 移除可能的时间戳格式 [YYYY-MM-DD 星期 HH:MM:SS]
+                cleaned_search_content = re.sub(r'\[\d{4}-\d{2}-\d{2}.*?\d{2}:\d{2}(:\d{2})?\]', '', cleaned_search_content).strip()
+                
+                # 清理显示的消息内容
+                cleaned_item_name = item_name.strip()
+                # 移除换行符和多余空格
+                cleaned_item_name = ' '.join(cleaned_item_name.split())
+                cleaned_search_content = ' '.join(cleaned_search_content.split())
+                
+                # 多种匹配方式
+                # 方法1：完全包含匹配
+                exact_match = cleaned_search_content in cleaned_item_name
+                
+                # 方法2：反向包含匹配（处理消息可能被截断的情况）
+                reverse_match = cleaned_item_name in cleaned_search_content
+                
+                # 方法3：去除标点符号的模糊匹配（处理特殊字符问题）
+                import string
+                search_no_punct = cleaned_search_content.translate(str.maketrans('', '', string.punctuation))
+                item_no_punct = cleaned_item_name.translate(str.maketrans('', '', string.punctuation))
+                fuzzy_match = search_no_punct in item_no_punct or item_no_punct in search_no_punct
+                
+                # 方法4：关键词匹配（至少50%的词匹配）
+                search_words = set(cleaned_search_content.split())
+                item_words = set(cleaned_item_name.split())
+                if len(search_words) > 0:
+                    word_match_ratio = len(search_words.intersection(item_words)) / len(search_words)
+                    keyword_match = word_match_ratio >= 0.5
+                else:
+                    keyword_match = False
+                
+                # 综合判断：任一匹配方式成功即认为匹配
+                is_match = exact_match or reverse_match or fuzzy_match or keyword_match
+                
+                logger.debug(f"[引用消息任务] 消息匹配检查 - 搜索内容: '{cleaned_search_content}', 消息内容: '{cleaned_item_name[:50]}...'")
+                logger.debug(f"[引用消息任务] 匹配结果: 完全:{exact_match}, 反向:{reverse_match}, 模糊:{fuzzy_match}, 关键词:{keyword_match}")
+                
+                if is_match:
+                    # 更精确的AI消息判断逻辑
+                    # 方法1: 基于中心点位置 (主要判断)
+                    is_ai_by_center = item_center_x > pane_center_x
+                    
+                    # 方法2: 基于右边界位置 (辅助判断) - AI消息通常更靠右
+                    list_width = list_rect.width()
+                    is_ai_by_right_edge = item_right > (list_rect.left + list_width * 0.6)
+                    
+                    # 方法3: 基于左边界位置 (辅助判断) - 用户消息通常从左边开始
+                    is_ai_by_left_edge = item_left > (list_rect.left + list_width * 0.25)
+                    
+                    # 方法4: 基于聊天历史 (最可靠的判断) - 智能匹配AI消息
+                    is_ai_by_history = False
+                    match_confidence = 0
+                    
+                    # 如果明确指定了消息类型，直接使用，不需要检测
+                    if message_type == "ai":
+                        is_ai_by_history = True
+                        match_confidence = 100
+                        logger.info(f"[引用消息任务] 使用显式类型判断：AI消息")
+                    elif message_type == "user":
+                        is_ai_by_history = False
+                        match_confidence = 100
+                        logger.info(f"[引用消息任务] 使用显式类型判断：用户消息")
+                    else:
+                        # 使用智能检测（向后兼容）
+                        try:
+                            # 获取当前聊天的上下文
+                            if chat_name in chat_contexts:
+                                for prompt_name, context in chat_contexts[chat_name].items():
+                                    # 检查最近的AI回复中是否包含这条消息
+                                    for msg in reversed(context[-30:]):  # 检查最近30条消息
+                                        if msg.get('role') == 'assistant':
+                                            ai_content = msg.get('content', '')
+                                            # 清理AI消息内容进行比较 - 移除换行符和多余空格
+                                            cleaned_ai_content = ' '.join(ai_content.replace('\n', ' ').split())
+                                            
+                                            if len(cleaned_search_content) >= 2:  # 降低最小长度要求
+                                                confidence = 0
+                                                
+                                                # 调试：记录每次比较
+                                                logger.debug(f"[引用消息任务] 比较: 搜索='{cleaned_search_content}' vs AI='{cleaned_ai_content[:50]}...'")
+                                                
+                                                # 匹配方法1：完全相同 (最高权重)
+                                                if cleaned_search_content == cleaned_ai_content:
+                                                    confidence = 100
+                                                    logger.debug(f"[引用消息任务] 完全匹配(100%): '{cleaned_search_content}'")
+                                            
+                                            # 匹配方法2：包含关系匹配（更宽松）
+                                            elif cleaned_search_content in cleaned_ai_content:
+                                                # AI消息包含搜索内容 (搜索内容可能是AI消息的一部分)
+                                                contain_ratio = len(cleaned_search_content) / len(cleaned_ai_content) if len(cleaned_ai_content) > 0 else 0
+                                                confidence = max(70, int(contain_ratio * 100))  # 至少70%置信度
+                                                logger.debug(f"[引用消息任务] AI包含搜索内容({confidence}%): 占比={contain_ratio:.2f}")
+                                            
+                                            elif cleaned_ai_content in cleaned_search_content:
+                                                # 搜索内容包含AI消息 (AI消息可能被截断)
+                                                contain_ratio = len(cleaned_ai_content) / len(cleaned_search_content) if len(cleaned_search_content) > 0 else 0
+                                                confidence = max(75, int(contain_ratio * 100))  # 至少75%置信度
+                                                logger.debug(f"[引用消息任务] 搜索内容包含AI({confidence}%): 占比={contain_ratio:.2f}")
+                                            
+                                            # 匹配方法3：词汇重叠匹配
+                                            else:
+                                                search_words = set(cleaned_search_content.lower().split())
+                                                ai_words = set(cleaned_ai_content.lower().split())
+                                                
+                                                if search_words and ai_words:
+                                                    # 计算搜索内容的词在AI内容中的覆盖率
+                                                    common_words = search_words & ai_words
+                                                    word_coverage = len(common_words) / len(search_words) if len(search_words) > 0 else 0
+                                                    
+                                                    # 如果大部分关键词都匹配，可能是同一条消息
+                                                    if word_coverage >= 0.7:  # 70%的词匹配
+                                                        confidence = int(word_coverage * 85)  # 最高85%置信度
+                                                        logger.debug(f"[引用消息任务] 词汇匹配({confidence}%): 覆盖率={word_coverage:.2f}, 共同词={len(common_words)}")
+                                            
+                                                if confidence >= 70:  # 70%以上置信度
+                                                    is_ai_by_history = True
+                                                    match_confidence = confidence
+                                                    logger.debug(f"[引用消息任务] AI消息匹配成功，置信度: {confidence}%")
+                                                    logger.debug(f"[引用消息任务] 搜索内容: '{cleaned_search_content}'")
+                                                    logger.debug(f"[引用消息任务] AI内容: '{cleaned_ai_content[:100]}...'")
+                                                    break
+                                        if is_ai_by_history:
+                                            break
+                        except Exception as e:
+                            logger.debug(f"[引用消息任务] 检查聊天历史时出错: {e}")
+                    
+                    # 如果历史记录匹配失败，输出调试信息（仅在智能检测模式下）
+                    if not is_ai_by_history and message_type is None:
+                        logger.debug(f"[引用消息任务] 历史记录匹配失败，搜索内容: '{cleaned_search_content}'")
+                        logger.debug(f"[引用消息任务] 将检查最近5条AI消息作为调试:")
+                        try:
+                            if chat_name in chat_contexts:
+                                debug_count = 0
+                                for prompt_name, context in chat_contexts[chat_name].items():
+                                    for msg in reversed(context[-10:]):
+                                        if msg.get('role') == 'assistant' and debug_count < 5:
+                                            debug_ai_content = ' '.join(msg.get('content', '').split())
+                                            logger.debug(f"[引用消息任务] AI消息{debug_count+1}: '{debug_ai_content[:80]}...'")
+                                            debug_count += 1
+                                            if debug_count >= 5:
+                                                break
+                                    if debug_count >= 5:
+                                        break
+                        except Exception as e:
+                            logger.debug(f"[引用消息任务] 调试输出时出错: {e}")
+                    
+                    # 综合判断：位置指标 + 历史记录指标
+                    position_indicators = [is_ai_by_center, is_ai_by_right_edge, is_ai_by_left_edge]
+                    position_score = sum(position_indicators)
+                    
+                    # 如果历史记录明确显示是AI消息，则权重更高
+                    if is_ai_by_history:
+                        is_ai_message = True  # 历史记录是最可靠的判断
+                    else:
+                        is_ai_message = position_score >= 2  # 至少2个位置指标支持才判定为AI消息
+                    
+                    matching_messages.append({
+                        'item': item,
+                        'name': item_name,
+                        'center_x': item_center_x,
+                        'left': item_left,
+                        'right': item_right,
+                        'is_ai_message': is_ai_message
+                    })
+                    
+                    logger.info(f"[引用消息任务] 找到匹配内容的消息: '{item_name}', X范围: {item_left}-{item_right}, 中心: {item_center_x}")
+                    logger.info(f"[引用消息任务] 面板信息: 左边界:{list_rect.left}, 宽度:{list_width}, 中心:{pane_center_x}")
+                    logger.info(f"[引用消息任务] 位置判断: 中心点:{is_ai_by_center}, 右边界:{is_ai_by_right_edge}, 左边界:{is_ai_by_left_edge}")
+                    logger.info(f"[引用消息任务] 历史记录判断: {is_ai_by_history} (置信度: {match_confidence}%)")
+                    logger.info(f"[引用消息任务] 位置得分: {position_score}/3, 最终判断: {'AI消息(右侧)' if is_ai_message else '用户消息(左侧)'}")
+                    
+            except Exception as e:
+                logger.debug(f"[引用消息任务] 检查消息项时出错: {e}")
+                continue
+        
+        logger.info(f"[引用消息任务] 消息扫描完成，找到 {len(matching_messages)} 个匹配的消息")
+        
+        # 选择最新的匹配消息
+        if matching_messages:
+            target_message = matching_messages[0]
+            target_message_item = target_message['item']
+            is_ai_message = target_message['is_ai_message']
+            logger.info(f"[引用消息任务] 选择最新的匹配消息进行引用: '{target_message['name']}', 类型: {'AI消息' if is_ai_message else '用户消息'}")
+        else:
+            logger.warning(f"[引用消息任务] 未找到任何包含内容 '{message_content}' 的消息。")
+            return
+            
+        # 右键点击目标消息
+        message_rect = target_message_item.BoundingRectangle
+        chat_window_rect = chat_window_control.BoundingRectangle
+        
+        message_width = message_rect.width()
+        message_height = message_rect.height()
+        
+        # 根据消息类型选择不同的点击策略
+        if is_ai_message:
+            # AI消息：点击消息右侧20%处（从右边界往左20%的位置）
+            click_x = message_rect.right - int(message_width * 0.2)
+        else:
+            # 用户消息：点击消息左侧20%处（从左边界往右20%的位置）
+            click_x = message_rect.left + int(message_width * 0.2)
+        
+        click_y = message_rect.top + message_height // 2
+        
+        # 边界检查
+        if click_x >= message_rect.right:
+            click_x = message_rect.right - 10
+        elif click_x <= message_rect.left:
+            click_x = message_rect.left + 10
+            
+        if click_y >= message_rect.bottom:
+            click_y = message_rect.bottom - 5
+        elif click_y <= message_rect.top:
+            click_y = message_rect.top + 5
+        
+        logger.info(f"[引用消息任务] 消息尺寸: {message_width}x{message_height}")
+        logger.info(f"[引用消息任务] 点击策略: {'右侧20%(从右往左)' if is_ai_message else '左侧20%(从左往右)'}")
+        logger.info(f"[引用消息任务] 最终点击位置: ({click_x}, {click_y})")
+        
+        # 右键点击消息
+        pyautogui.click(x=click_x, y=click_y, button='right', duration=0.25)
+        logger.info("[引用消息任务] 右键点击指令已发送。等待菜单弹出...")
+        time.sleep(0.5)
+        
+        # A/B计划执行引用操作
+        action_completed = False
+        
+        # A计划: 智能识别引用选项
+        logger.info("[引用消息任务 - A计划] 尝试通过控件属性智能识别'引用'...")
+        uia.uiautomation.SetGlobalSearchTimeout(1.0)
+        menu = uia.MenuControl(ClassName='CMenuWnd')
+        
+        if menu.Exists(0.1):
+            logger.info("[引用消息任务 - A计划] 成功定位菜单容器，开始遍历子项...")
+            quote_item = None
+            all_menu_items = menu.GetChildren()
+            for item in all_menu_items:
+                if item.Name == '引用':
+                    quote_item = item
+                    break
+            
+            if quote_item:
+                logger.info("[引用消息任务 - A计划] 成功！已通过名称识别到'引用'项，准备点击。")
+                quote_item.Click()
+                action_completed = True
+            else:
+                found_names = [child.Name for child in all_menu_items]
+                logger.warning(f"[引用消息任务 - A计划] 失败：遍历完成，但未能找到名为'引用'的项。探测到的名称列表: {found_names}。")
+        else:
+            logger.warning("[引用消息任务 - A计划] 失败：未能定位到菜单容器。")
+        
+        # B计划: 键盘模拟（如果A计划失败）
+        if not action_completed:
+            logger.info("[引用消息任务 - B计划] A计划失败，启动键盘操作方案！")
+            logger.info("[引用消息任务 - B计划] 正在发送键盘指令: 7次[Down]到达引用选项 -> [Enter]")
+            
+            # 微信右键菜单：复制(默认选中) -> 需要按7次Down到达引用(第8个)
+            for i in range(7):  # 按7次Down键到达引用选项
+                pyautogui.press('down')
+                time.sleep(0.1)
+            
+            pyautogui.press('enter')
+            time.sleep(0.1)
+            action_completed = True
+        
+        if action_completed:
+            logger.info(f"🎉🎉🎉 [引用消息任务] 任务圆满成功！已引用消息: '{message_content[:50]}...' 🎉🎉🎉")
+            
+            # 如果有额外文本需要添加到引用中
+            if additional_text and additional_text.strip():
+                logger.info(f"[引用消息任务] 正在添加额外文本到引用: '{additional_text[:50]}...'")
+                time.sleep(0.5)  # 等待引用操作完全完成
+                
+                # 使用SendKeys添加额外文本内容到输入框
+                try:
+                    auto.SendKeys(additional_text, interval=0.02)
+                    logger.info(f"[引用消息任务] 额外文本已添加到引用消息")
+                except Exception as e:
+                    logger.error(f"[引用消息任务] 添加额外文本失败: {e}", exc_info=True)
+                
+                # 发送完整的引用+文本消息
+                time.sleep(0.3)
+                pyautogui.press('enter')
+                logger.info(f"[引用消息任务] 包含引用和额外文本的完整消息已发送")
+            
+            # 引用操作完成后等待一段时间，确保微信界面状态稳定，避免影响后续消息发送
+            time.sleep(1.5)
+        else:
+            logger.error("[引用消息任务] 致命错误：A计划与B计划全部失败，无法执行引用操作。")
+            
+    except Exception as e:
+        logger.error(f"[引用消息任务] 执行时发生未知严重错误", exc_info=True)
+        try:
+            wx.SendMsg(msg="抱歉，执行引用操作时内部发生严重错误，请检查后台日志。", who=chat_name)
+        except Exception: 
+            pass
+    finally:
+        uia.uiautomation.SetGlobalSearchTimeout(DEFAULT_UI_AUTOMATION_TIMEOUT)
+        if chat_window_control and chat_window_control.Exists(0.1):
+            chat_window_control.SetTopmost(False)
+        
+        # 恢复消息发送状态
+        with can_send_messages_lock:
+            can_send_messages = True
+        
+        logger.debug(f"[引用消息任务] 任务结束，资源已释放，消息发送状态已恢复，全局超时已恢复为 {DEFAULT_UI_AUTOMATION_TIMEOUT} 秒。")
+
+# ==================== 引用消息功能区 结束 ====================
+
 # ==================== 特殊艾特功能区 开始 (主动聚焦终版) ====================
 def special_at_user_threaded(chat_name: str, target_user_name: str):
     """
@@ -2631,9 +3028,7 @@ def process_user_messages(user_id):
 
 def send_reply(user_id, sender_name, username, original_merged_message, reply, group_config=None):
     """
-    - 统一发送回复的函数。
-    - 处理 [拍一拍xx] 指令，仅执行动作。
-    - 使用动态正则表达式精确过滤 "我拍了拍<目标>" 格式的叙述文本。
+    统一发送回复的函数。
     """
     if not reply:
         logger.warning(f"尝试向 {user_id} 发送空回复，操作已取消。")
@@ -2658,23 +3053,37 @@ def send_reply(user_id, sender_name, username, original_merged_message, reply, g
             at_reply_thread.start()
             return
 
-    # --- 2. [标准发送流程] 分割消息为动作和文本 ---
+    # --- 2.精准分割消息为动作和文本 ---
     logger.info(f"执行标准分段发送流程。")
     final_send_queue = []
-    raw_parts = re.split(r'(\[\[撤回\][^\]]*\]|\[.*?\])', reply)
     
-    for part in raw_parts:
-        if not part.strip(): continue
-        if part.startswith('[[撤回]') and part.endswith(']'):
-            final_send_queue.append({'type': 'action', 'content': part})
-        elif re.match(r'\[.*?\]$', part):
-            final_send_queue.append({'type': 'action', 'content': part})
-        else:
-            text_snippets = split_message_with_context(part)
+    command_pattern = re.compile(r'(\[\[(?:撤回|引用|引用对方|引用自己)[^\]]*\][^\]]*\]|\[.*?\])')
+    
+    last_end = 0
+    for match in command_pattern.finditer(reply):
+        start, end = match.span()
+        # 添加指令前的文本部分
+        if start > last_end:
+            text_part = reply[last_end:start]
+            text_snippets = split_message_with_context(text_part)
             for snippet in text_snippets:
                 if snippet.strip():
                     final_send_queue.append({'type': 'text', 'content': snippet.strip()})
-    
+        
+        # 添加识别到的指令
+        command_part = match.group(1)
+        final_send_queue.append({'type': 'action', 'content': command_part})
+        
+        last_end = end
+
+    # 添加最后一个指令后的剩余文本
+    if last_end < len(reply):
+        text_part = reply[last_end:]
+        text_snippets = split_message_with_context(text_part)
+        for snippet in text_snippets:
+            if snippet.strip():
+                final_send_queue.append({'type': 'text', 'content': snippet.strip()})
+
     if not final_send_queue:
         logger.warning(f"处理后无可发送内容，原始回复: {reply}")
         return
@@ -2691,116 +3100,99 @@ def send_reply(user_id, sender_name, username, original_merged_message, reply, g
         if item_type == 'action':
             content_stripped = item_content.strip()
             
-            # 处理撤回指令
-            if content_stripped.startswith('[[撤回]') and content_stripped.endswith(']'):
-                message_to_recall = content_stripped[5:-1].strip()
+            # --- 指令解析与执行 (解析器部分无需修改) ---
+            quote_match = re.match(r'\[\[(引用对方|引用自己|引用)(.*?)\](.*?)\]', content_stripped)
+            recall_match = re.match(r'\[\[撤回(.*?)\](.*?)\]', content_stripped)
+
+            if quote_match:
+                quote_type_str = quote_match.group(1)
+                message_to_quote = quote_match.group(3).strip()
+                
+                additional_text = ""
+                if i + 1 < len(final_send_queue) and final_send_queue[i + 1]['type'] == 'text':
+                    additional_text = final_send_queue[i + 1]['content']
+                    i += 1 
+                
+                if message_to_quote:
+                    message_type = None
+                    if quote_type_str == "引用对方": message_type = "user"
+                    elif quote_type_str == "引用自己": message_type = "ai"
+                    
+                    logger.info(f"执行引用操作: type='{quote_type_str}', msg='{message_to_quote[:30]}...', text='{additional_text[:30]}...'")
+                    quote_thread = threading.Thread(target=quote_message_threaded, args=(user_id, message_to_quote, additional_text, message_type))
+                    quote_thread.start()
+                    quote_thread.join(timeout=25)
+                else:
+                    logger.warning(f"引用指令内容为空: {content_stripped}")
+
+            elif recall_match:
+                message_to_recall = recall_match.group(2).strip()
                 if message_to_recall:
                     logger.info(f"执行撤回消息指令，目标消息: '{message_to_recall}'")
                     recall_thread = threading.Thread(target=recall_message_threaded, args=(user_id, message_to_recall))
                     recall_thread.start()
                     recall_thread.join(timeout=15)
-            
-            # 处理所有 [拍一拍xx] 指令
-            elif content_stripped.startswith('[拍一拍') and content_stripped.endswith(']'):
-                pat_match = re.match(r'\[拍一拍\s*(.*?)\]$', content_stripped)
-                target = pat_match.group(1).strip() if pat_match else ""
-                if target == '自己':
-                    logger.info(f"执行[拍一拍自己]指令...")
-                    pat_self_thread = threading.Thread(target=pat_myself_threaded, args=(user_id,))
-                    pat_self_thread.start()
-                    pat_self_thread.join(timeout=15)
-                elif is_group and target and target != '对方':
-                    logger.info(f"执行[拍一拍 {target}]指令...")
-                    pat_thread = threading.Thread(target=pat_pat_user_threaded, args=(user_id, target))
-                    pat_thread.start()
-                    pat_thread.join(timeout=15)
-                elif not is_group or (is_group and (target == '对方' or not target)):
-                    logger.info(f"执行[拍一拍对方]指令 (目标: '{sender_name}')...")
-                    pat_thread = threading.Thread(target=pat_pat_user_threaded, args=(user_id, sender_name))
-                    pat_thread.start()
-                    pat_thread.join(timeout=15)
                 else:
-                    logger.warning(f"拍一拍指令 '{content_stripped}' 无法执行，已忽略。")
+                    logger.warning(f"撤回指令内容为空: {content_stripped}")
             
-            # 处理其他 [...] 标签，如表情包
-            else:
+            else: # Fallback for ALL single-bracket tags ([拍一拍] or [emoji])
                 single_bracket_match = re.match(r'\[(.*?)\]', content_stripped)
                 if single_bracket_match:
                     original_tag = single_bracket_match.group(1)
-                    # 移除所有空格、下划线、连接符
                     normalized_tag = re.sub(r'[\s_-]', '', original_tag)
 
-                    # 2. 检查标签是否以'拍一拍'开头
                     if normalized_tag.startswith('拍一拍'):
                         target = normalized_tag[len('拍一拍'):].strip()
                         logger.info(f"检测到灵活匹配的[拍一拍]指令。原始: '[{original_tag}]', 标准化后: '[{normalized_tag}]', 目标: '{target}'")
                         
-                        # 3. 执行相应的拍一拍动作
                         if target == '自己':
-                            logger.info(f"执行灵活匹配的[拍一拍自己]指令...")
+                            logger.info(f"执行[拍一拍自己]指令...")
                             pat_self_thread = threading.Thread(target=pat_myself_threaded, args=(user_id,))
                             pat_self_thread.start()
                             pat_self_thread.join(timeout=15)
                         elif is_group and target and target != '对方':
-                            logger.info(f"执行灵活匹配的[拍一拍 {target}]指令...")
+                            logger.info(f"执行[拍一拍 {target}]指令...")
                             pat_thread = threading.Thread(target=pat_pat_user_threaded, args=(user_id, target))
                             pat_thread.start()
                             pat_thread.join(timeout=15)
-                        # 如果是私聊，或者在群聊中目标是'对方'或为空（例如指令就是'[拍一拍]')
                         elif not is_group or (is_group and (target == '对方' or not target)):
-                            logger.info(f"执行灵活匹配的[拍一拍对方]指令 (目标: '{sender_name}')...")
+                            logger.info(f"执行[拍一拍对方]指令 (目标: '{sender_name}')...")
                             pat_thread = threading.Thread(target=pat_pat_user_threaded, args=(user_id, sender_name))
                             pat_thread.start()
                             pat_thread.join(timeout=15)
                         else:
-                            logger.warning(f"灵活匹配的拍一拍指令 '{content_stripped}' 无法执行，已忽略。")
-                    
-                    # 如果不是灵活的拍一拍指令，则执行原有的表情包和标签过滤逻辑
+                            logger.warning(f"拍一拍指令 '{content_stripped}' 无法执行，已忽略。")
+
                     else:
-                        tag = original_tag # 使用原始标签进行表情包文件夹匹配
-                        # 优先检查文件夹是否存在
-                        if tag and tag in valid_emoji_tags:
-                            logger.info(f"检测到有效表情标签: [{tag}] (文件夹存在)，准备发送图片...")
-                            emoji_path = send_emoji(tag)
+                        is_valid_sendable_emoji = (original_tag and original_tag in valid_emoji_tags and len(original_tag) <= EMOJI_TAG_MAX_LENGTH)
+                        if is_valid_sendable_emoji:
+                            logger.info(f"检测到有效表情标签: [{original_tag}]，准备发送图片...")
+                            emoji_path = send_emoji(original_tag)
                             if emoji_path:
                                 wx.SendFiles(filepath=emoji_path, who=user_id)
                                 time.sleep(EMOJI_SEND_INTERVAL)
-
-                        # 如果文件夹不存在，再进行长度判断
+                        elif len(original_tag) > EMOJI_TAG_MAX_LENGTH:
+                            logger.info(f"标签'[{original_tag}]'不是有效表情但长度超过限制({EMOJI_TAG_MAX_LENGTH})，作为普通文本发送。")
+                            wx.SendMsg(msg=item_content, who=user_id)
+                            time.sleep(TEXT_SEND_INTERVAL)
                         else:
-                            # 过滤无效的拍一拍叙述文本
-                            if '我拍了拍' in tag or '你拍了拍' in tag:
-                                logger.info(f"检测到不规范的拍一拍格式文本'[{tag}]'，已成功过滤。")
-                            
-                            # 根据长度决定是过滤还是作为文本发送
-                            elif len(tag) <= EMOJI_TAG_MAX_LENGTH:
-                                logger.info(f"标签'[{tag}]'无效(文件夹不存在)且长度小于等于限制({EMOJI_TAG_MAX_LENGTH})，已按要求过滤。")
-                                # 不执行任何发送操作，即为过滤
-                            
-                            else:
-                                logger.info(f"标签'[{tag}]'无效(文件夹不存在)但长度超过限制({EMOJI_TAG_MAX_LENGTH})，作为普通文本发送。")
-                                wx.SendMsg(msg=item_content, who=user_id)
-                                time.sleep(TEXT_SEND_INTERVAL)
+                            logger.info(f"标签'[{original_tag}]'无效表情且长度小于等于限制({EMOJI_TAG_MAX_LENGTH})，已按要求过滤。")
+                else:
+                     logger.warning(f"标签 '{content_stripped}' 未匹配任何已知动作（撤回/引用），也非标准单括号格式，已忽略。")
 
         elif item_type == 'text':
-            # --- 动态文本过滤器 ---
-            # 1. 获取当前对话的角色名 (AI的名字)
-            # 注意: 'role_name' 在函数开头已经被定义
             role_name = prompt_mapping.get(username, username)
-
-            # 2. 构建动态正则表达式，匹配多种“拍一拍”的叙述
-            # 使用 re.escape 来安全处理可能包含特殊字符的昵称
-            # 允许 "我拍了拍" 和目标之间有0个或多个空格 (\s*)
+            
             pat_narrative_pattern = re.compile(
-                rf"^我拍了拍\s*['\"]?({re.escape(role_name)}|{re.escape(sender_name)}|自己|对方)['\"]?.*"
+                rf"^我拍了拍\s*['\"“”]?({re.escape(role_name)}|{re.escape(sender_name)}|自己|对方)['\"“”]?.*"
             )
 
-            # 3. 检查文本开头是否匹配该模式
+            # 检查当前要发送的文本是否匹配这个模式
             if pat_narrative_pattern.match(item_content.strip()):
+                # 如果匹配，就记录日志并直接跳过，不发送这条消息
                 logger.info(f"检测到并已过滤不应发送的拍一拍叙述性文本: '{item_content}'")
-                # 匹配成功，直接跳过此文本段的发送
             else:
-                # 如果文本通过了过滤器，则继续执行原有的处理和发送流程
+                # 如果不匹配，才执行原来的发送逻辑
                 text_to_send = remove_timestamps(item_content)
                 if REMOVE_PARENTHESES:
                     text_to_send = remove_parentheses_and_content(text_to_send)
@@ -2808,7 +3200,6 @@ def send_reply(user_id, sender_name, username, original_merged_message, reply, g
                 if text_to_send:
                     wx.SendMsg(msg=text_to_send, who=user_id)
                     time.sleep(TEXT_SEND_INTERVAL)
-            # --- 过滤器结束 ---
 
         i += 1
         
