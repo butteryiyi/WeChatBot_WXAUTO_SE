@@ -64,11 +64,34 @@ def _filter_sensitive_content(text):
     for old, new in replacements.items(): text = text.replace(old, new)
     return text
 
+# 移除分隔符的清洗器：删除形如 ---、———、***、###、=== 等分隔线
+def _sanitize_no_separators(text):
+    if not text: return ""
+    try:
+        # 去除整行的分隔线
+        lines = text.split('\n')
+        cleaned_lines = []
+        sep_line_pattern = re.compile(r'^\s*[-—_*=#~]{3,}\s*$')
+        for line in lines:
+            if sep_line_pattern.match(line):
+                continue
+            # 行内的长分隔符片段压缩为一个空格
+            line = re.sub(r'[-—_*=#~]{3,}', ' ', line)
+            cleaned_lines.append(line)
+        cleaned = '\n'.join(cleaned_lines)
+        # 清除多余空白
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
+        return cleaned
+    except Exception:
+        return text
+
 def load_used_media(): return _load_json_file(USED_MEDIA_FILE, [])
 def save_used_media(used_list): _save_json_file(USED_MEDIA_FILE, used_list)
 def get_local_categories():
     if not os.path.isdir(PYQ_FOLDER): return []
-    return [d for d in os.listdir(PYQ_FOLDER) if os.path.isdir(os.path.join(PYQ_FOLDER, d))]
+    categories = [d for d in os.listdir(PYQ_FOLDER) if os.path.isdir(os.path.join(PYQ_FOLDER, d))]
+    # 排除用户上传目录，防止NPC使用主人上传的图片
+    return [d for d in categories if d != 'user_uploads']
 
 def get_local_media(category):
     category_path = os.path.join(PYQ_FOLDER, category)
@@ -76,14 +99,20 @@ def get_local_media(category):
     all_media = [f for f in os.listdir(category_path) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.mp4'))]
     if not all_media: return None
     used_media = load_used_media()
-    available_media = [m for m in all_media if os.path.join(category, m) not in used_media]
+    # 增加短期冷却：避免短时间重复使用同一图片
+    COOLDOWN_MAX = 50  # 记录最近50次使用，避免复用
+    # used_media 为列表，后追加最新；仅认为不在最近 COOLDOWN_MAX 次中的为可用
+    recent = used_media[-COOLDOWN_MAX:] if len(used_media) > COOLDOWN_MAX else used_media
+    available_media = [m for m in all_media if os.path.join(category, m) not in recent]
     if not available_media:
-        logging.warning(f"分类 '{category}' 中的所有媒体均已使用，将重置记录。")
-        save_used_media([])
+        logging.info(f"分类 '{category}' 在冷却窗口内无可用媒体，放宽到全部媒体中随机选择。")
         available_media = all_media
     chosen_media_name = random.choice(available_media)
     chosen_media_path = os.path.join(category, chosen_media_name).replace('\\', '/')
+    # 维护全局最近使用队列
     used_media.append(chosen_media_path)
+    if len(used_media) > 500:
+        used_media = used_media[-500:]
     save_used_media(used_media)
     with app.app_context():
         return url_for('serve_media', filename=chosen_media_path)
@@ -93,12 +122,31 @@ def get_image_from_pexels(keywords, config):
     if not api_key or '粘贴你' in api_key: return None
     try:
         headers = {"Authorization": api_key}
-        query_with_exclusions = f"{','.join(keywords)} -person -people -face -portrait -man -woman"
-        url = f"https://api.pexels.com/v1/search?query={quote(query_with_exclusions)}&per_page=10&orientation=portrait"
+        # 最强排除：人物及身体相关词汇
+        exclusions = [
+            '-person','-people','-human','-man','-woman','-boy','-girl','-male','-female',
+            '-face','-portrait','-headshot','-selfie','-fashion','-model','-bride','-groom','-wedding',
+            '-hand','-hands','-arm','-arms','-shoulder','-shoulders','-leg','-legs','-foot','-feet','-finger','-fingers','-nail','-nails','-skin','-body','-bodies','-closeup','-torso'
+        ]
+        # 倾向风景/场景/物件类
+        scenery_bias = ['scenery','landscape','nature','architecture','interior','cityscape','street','nightscape','mountain','forest','ocean','sky','sunset','sunrise','lake','river','garden','room','desk','object','still life']
+        final_keywords = keywords + scenery_bias
+        query_with_exclusions = f"{','.join(final_keywords + exclusions)}"
+        url = f"https://api.pexels.com/v1/search?query={quote(query_with_exclusions)}&per_page=20"
         response = requests.get(url, headers=headers, timeout=15)
         if response.status_code == 200:
             photos = response.json().get('photos', [])
-            if photos: return random.choice(photos)['src']['large']
+            # 二次过滤：alt 和摄影师名等元数据中如含人/肢体关键词则剔除
+            def is_non_human(p):
+                alt = (p.get('alt') or '').lower()
+                bad_tokens = [
+                    'person','people','human','man','woman','boy','girl','male','female','portrait','face','selfie','model','fashion','wedding',
+                    'hand','hands','arm','arms','shoulder','leg','legs','foot','feet','finger','fingers','nail','nails','skin','body','bodies','torso'
+                ]
+                return not any(tok in alt for tok in bad_tokens)
+            filtered = [p for p in photos if is_non_human(p)]
+            pick = random.choice(filtered or photos) if (filtered or photos) else None
+            if pick: return pick['src']['large']
         return None
     except Exception: return None
 
@@ -158,9 +206,13 @@ def generate_moment_for_character(character_name, conversation_context, config, 
 # 任务
 严格按以下JSON格式输出，不要有任何多余文字:
 1. `post_text`: 创作朋友圈文案。
-2. `media_suggestion`: 提供配图建议。可用本地分类: [{", ".join(local_categories) or "无"}]。
+2. `media_suggestion`: 提供配图建议。可以使用【本地分类】[{", ".join(local_categories) or "无"}]，或使用【Pexels关键词】（数组），也可以选择不配图（source 设为 "none"）。若使用Pexels，必须仅限风景/场景/物件，严禁出现人物或身体任何部分。
 3. `likes`: 从人际关系中挑选2-5个会点赞的NPC名字，并【根据你的性格和文案内容，决定是否也把自己({character_name})加入点赞列表】，最终组成一个包含所有点赞者名字的数组。
 4. `npc_comments`: 挑选1-3个NPC发表评论，并可选择性地让【{character_name}】进行回复。
+# 约束
+禁止使用任何分隔符（例如 ---、——、***、### 等符号线）。
+# 配图硬性约束
+严禁出现任何人物、肢体或身体部位；优先选择贴合角色的风景/场景/物件。
 # 输出格式 (必须严格遵守)
 {{
   "post_text": "朋友圈文案...",
@@ -181,7 +233,9 @@ def generate_moment_for_character(character_name, conversation_context, config, 
 # 任务
 严格按以下JSON格式输出，不要有任何多余文字:
 1. `post_text`: 创作朋友圈文案。
-2. `media_suggestion`: 提供配图建议。可用本地分类: [{", ".join(local_categories) or "无"}]。
+2. `media_suggestion`: 提供配图建议。可用本地分类: [{", ".join(local_categories) or "无"}]，或选择不配图（source 设为 "none"）。
+# 约束
+禁止使用任何分隔符（例如 ---、——、***、### 等符号线）。如果使用Pexels配图，必须仅限风景/场景/物件，严禁出现人物或任何身体部位。
 # 输出格式 (必须严格遵守)
 {{
   "post_text": "朋友圈文案...",
@@ -191,19 +245,53 @@ def generate_moment_for_character(character_name, conversation_context, config, 
     try:
         response = client.chat.completions.create(model=config.get('MODEL', 'deepseek-chat'), messages=[{"role": "user", "content": prompt}], temperature=float(config.get('TEMPERATURE', 0.8)), response_format={"type": "json_object"})
         raw_content = response.choices[0].message.content
-        json_match = re.search(r'\{.*\}', raw_content, re.DOTALL)
+        # 先去除可能的代码围栏
+        cleaned = raw_content.strip()
+        if cleaned.startswith('```'):
+            # 兼容 ```json 或 ```
+            cleaned = cleaned.split('\n', 1)[-1]
+            if cleaned.endswith('```'):
+                cleaned = cleaned[:-3]
+            cleaned = cleaned.strip()
+        # 提取第一个大括号JSON片段
+        json_match = re.search(r'\{.*\}', cleaned, re.DOTALL)
         if not json_match:
             logging.error(f"角色 '{character_name}' 的AI响应中未找到有效的JSON结构。响应内容: '{raw_content}'")
             return None
         json_string = json_match.group(0)
-        result_json = json.loads(json_string)
+        try:
+            result_json = json.loads(json_string)
+        except json.JSONDecodeError:
+            # 宽松清洗重试：给未加引号的键加引号，替换单引号为双引号
+            tentative = re.sub(r'([\{\s,])(\w+)\s*:', r'\1"\2":', json_string)
+            tentative = re.sub(r"'", '"', tentative)
+            try:
+                result_json = json.loads(tentative)
+            except Exception as e2:
+                logging.error(f"角色 '{character_name}' JSON解析失败，已尝试清洗仍失败。原始: {json_string} | 错误: {e2}")
+                return None
         if not result_json.get("post_text"): return None
+        # 清洗文本，移除分隔符
+        result_json["post_text"] = _sanitize_no_separators(result_json.get("post_text", ""))
+        # 同步清洗评论内容
+        if isinstance(result_json.get("npc_comments"), list):
+            for item in result_json["npc_comments"]:
+                if isinstance(item, dict):
+                    if item.get("text"): item["text"] = _sanitize_no_separators(item.get("text", ""))
+                    if item.get("reply"): item["reply"] = _sanitize_no_separators(item.get("reply", ""))
+
         media_suggestion = result_json.get("media_suggestion", {})
         media_url = None
-        if media_suggestion.get("source") == "local" and media_suggestion.get("identifier") in local_categories:
+        if media_suggestion.get("source") == "none":
+            media_url = None
+        elif media_suggestion.get("source") == "local" and media_suggestion.get("identifier") in local_categories:
             media_url = get_local_media(media_suggestion["identifier"])
         elif media_suggestion.get("source") == "pexels" and isinstance(media_suggestion.get("identifier"), list):
             media_url = get_image_from_pexels(media_suggestion["identifier"], config)
+        # 兜底：如果未能拿到媒体且存在 PEXELS_API_KEY，则尝试以角色名+风景偏好做二次检索
+        if media_suggestion.get("source") != "none" and not media_url and config.get('PEXELS_API_KEY'):
+            scenic_fallback = [character_name, 'scenery','landscape','nature','architecture','cityscape']
+            media_url = get_image_from_pexels(scenic_fallback, config)
         moment_item = {'id': str(uuid.uuid4()),'author': character_name,'post_text': result_json.get("post_text"),'image_url': media_url,'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),'likes': result_json.get("likes", []), 'comments': []}
         for npc_comment in result_json.get("npc_comments", []):
             if npc_comment.get("author") and npc_comment.get("text"):
@@ -392,6 +480,8 @@ def decide_and_generate_npc_reply(moment_id, replier_name, trigger_comment, is_p
 # 你的任务 (YOUR TASK)
 {task_prompt}
 - 你的回复可以针对刚发言的 `{trigger_comment.get('author')}`，也可以针对TA提到的 `{trigger_comment.get('reply_to')}`，或发表无人回复的感叹。
+# 写作约束 (CONSTRAINTS)
+严禁使用任何分隔符（例如 ---、——、***、### 等）。
 
 # 输出格式 (STRICTLY JSON)
 必须严格按照以下 JSON 格式输出你的决策，不要有任何多余的解释或Markdown标记。
@@ -416,6 +506,8 @@ def decide_and_generate_npc_reply(moment_id, replier_name, trigger_comment, is_p
             decision["should_reply"] = True
 
         if decision.get("should_reply") and decision.get("reply_text"):
+            # 清洗回复文本，移除分隔符
+            decision["reply_text"] = _sanitize_no_separators(decision.get("reply_text", ""))
             logging.info(f"AI决策结果：角色【{replier_name}】决定回复。")
             return decision
         else:
@@ -441,7 +533,7 @@ def process_single_npc_reaction(moment_id, replier_name, trigger_comment, is_pri
     if decision:
         ai_comment_obj = {
             "author": replier_name,
-            "text": decision["reply_text"],
+            "text": _sanitize_no_separators(decision["reply_text"]),
             "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         }
         if decision.get("reply_to"):
@@ -574,6 +666,7 @@ def generate_single_comment_thread(character_name, moment_id, user_nickname, ima
 ---
 
 任务: 你的名字是【{character_name}】。请对“{user_nickname}”的这条朋友圈做出反应。严格按照下面的JSON格式输出你的决策，不要有任何额外文本或Markdown标记：
+写作约束：严禁使用任何分隔符（例如 ---、——、***、### 等）。
 {{
   "should_comment": boolean,
   "comment_text": "你的评论内容。如果should_comment为false，则此项为空字符串。",
@@ -599,7 +692,7 @@ def generate_single_comment_thread(character_name, moment_id, user_nickname, ima
 
 
             should_comment = decision.get("should_comment", False)
-            comment_text = decision.get("comment_text", "").strip().strip('"\'')
+            comment_text = _sanitize_no_separators(decision.get("comment_text", "").strip().strip('\"\''))
             should_like = decision.get("should_like", False)
 
             if not should_comment and not should_like:
