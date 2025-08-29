@@ -147,52 +147,52 @@
 ## 📸 效果演示
 
 <p align="center">
-  <img width="1174" height="414" alt="表情包图一" src="https://github.com/user-attachments/assets/2b7cf2a1-de96-4601-bdc4-b683fda01497" />
+  <img width="1134" height="400" alt="表情包图一" src="https://github.com/user-attachments/assets/2b7cf2a1-de96-4601-bdc4-b683fda01497" />
   <br>
   <em>表情包图一（文件夹管理）</em>
 </p>
 <p align="center">
-  <img width="798" height="738" alt="表情包图二" src="https://github.com/user-attachments/assets/3ee4434f-2de7-47fe-b66f-2c77f00449ad" />
+  <img width="432" height="400" alt="表情包图二" src="https://github.com/user-attachments/assets/3ee4434f-2de7-47fe-b66f-2c77f00449ad" />
   <br>
   <em>表情包图二（引导式互动）</em>
 </p>
 <p align="center">
-  <img width="680" height="702" alt="Image" src="https://github.com/user-attachments/assets/6cccdc95-fcc9-4ed1-bf4f-634a83530216" />
+  <img width="400" height="412" alt="Image" src="https://github.com/user-attachments/assets/6cccdc95-fcc9-4ed1-bf4f-634a83530216" />
   <br>
   <em>主动拍一拍</em>
 </p>
 <p align="center">
-  <img width="566" height="422" alt="Image" src="https://github.com/user-attachments/assets/9a65bfbe-631d-4cfe-b3f8-c66fa6874280" />
+  <img width="536" height="400" alt="Image" src="https://github.com/user-attachments/assets/9a65bfbe-631d-4cfe-b3f8-c66fa6874280" />
   <br>
   <em>撤回识别</em>
 </p>
 <p align="center">
-  <img width="660" height="798" alt="Image" src="https://github.com/user-attachments/assets/7d24f11f-419a-4b4d-a97e-4bab146300f8" />
+  <img width="400" height="482" alt="Image" src="https://github.com/user-attachments/assets/7d24f11f-419a-4b4d-a97e-4bab146300f8" />
   <br>
   <em>拍一拍后缀识别</em>
 </p>
 <p align="center">
-  <img width="670" height="332" alt="Image" src="https://github.com/user-attachments/assets/b657a264-34a5-4682-9b9d-b9cfb260ad91" />
+  <img width="806" height="400" alt="Image" src="https://github.com/user-attachments/assets/b657a264-34a5-4682-9b9d-b9cfb260ad91" />
   <br>
   <em>关键词打电话</em>
 </p>
 <p align="center">
-  <img width="2138" height="1222" alt="Image" src="https://github.com/user-attachments/assets/f63bb121-72e1-4c66-b01c-da65c403702f" />
+  <img width="698" height="400" alt="Image" src="https://github.com/user-attachments/assets/f63bb121-72e1-4c66-b01c-da65c403702f" />
   <br>
   <em>网页上下文编辑</em>
 </p>
 <p align="center">
-  <img width="2770" height="1556" alt="Image" src="https://github.com/user-attachments/assets/a701573d-51b1-4131-96bf-397cb370bce2" />
+  <img width="712" height="400" alt="Image" src="https://github.com/user-attachments/assets/a701573d-51b1-4131-96bf-397cb370bce2" />
   <br>
   <em>独立群聊配置</em>
 </p>
 <p align="center">
-  <img width="672" height="656" alt="Image" src="https://github.com/user-attachments/assets/69c656be-a832-4b75-a5e0-34fa816af018" />
+  <img width="408" height="400" alt="Image" src="https://github.com/user-attachments/assets/69c656be-a832-4b75-a5e0-34fa816af018" />
   <br>
   <em>十连抽</em>
 </p>
 <p align="center">
-  <img width="828" height="699" alt="Image" src="https://github.com/user-attachments/assets/161a9d41-8a6d-4464-ad83-389716a0b25a" />
+  <img width="472" height="400" alt="Image" src="https://github.com/user-attachments/assets/161a9d41-8a6d-4464-ad83-389716a0b25a" />
   <br>
   <em>朋友圈网页展示</em>
 </p>
@@ -273,6 +273,7 @@
 <p>感谢同行，感谢遇见。</p >
 
 </div>
+
 
 
 
