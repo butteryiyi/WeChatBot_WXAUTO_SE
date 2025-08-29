@@ -196,6 +196,11 @@
   <br>
   <em>朋友圈网页展示</em>
 </p>
+<p align="center">
+  <img width="600" height="400" alt="Image" src="https://github.com/user-attachments/assets/b99a69d9-1482-46e7-92b3-c9aa27a5891d" />
+  <br>
+  <em>主动撤回和引用</em>
+</p>
 
 
 ## 🛠️ 快速上手
@@ -268,6 +273,7 @@
 <p>感谢同行，感谢遇见。</p >
 
 </div>
+
 
 
 
