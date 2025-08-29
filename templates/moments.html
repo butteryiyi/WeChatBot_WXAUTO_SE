@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <link rel="icon" type="image/png" href="https://i.postimg.cc/5NXjvbkf/5-E0-B50824145-F992-ABCD90247-E6933-BB.png">
+    <title>我的朋友圈</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="icon" href="data:;base64,iVBORw0KGgo=">
+    <style>
+        .moments-header {display:flex; justify-content:space-between; align-items:center; padding:6px 15px; position:sticky; top:0; z-index:1000; background-color:#272727; border-bottom:none;}
+        .user-profile-header{border-top:none!important;}
+        .header-title{position:absolute; left:50%; transform:translateX(-50%); font-size:1.1rem; font-weight:600; color:#fff; white-space:nowrap;}
+        .header-left, .header-right{display:flex; align-items:center;}
+        .header-left{gap:10px;}
+        .header-icon-btn{background:none; border:none; cursor:pointer; padding:5px; color:white; line-height:1; display:inline-flex; align-items:center; justify-content:center; transition:transform .2s;}
+        .header-icon-btn:hover{transform:scale(1.1);}
+        .header-icon-btn svg, #create-post-header-btn svg{height:18px; width:18px;}
+        #auth-status-link svg, #create-post-header-btn svg, #settings-btn svg{fill:currentColor;}
+        @keyframes spin-refresh{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+        #refresh-btn.is-refreshing svg{animation:spin-refresh 1s linear infinite;}
+        .owner-only{display:none!important;}
+        .user-is-owner .owner-only{display:inline-flex!important;}
+        #post-modal{position:fixed; top:0; left:0; width:100%; height:100%; background-color:rgba(0,0,0,0.7); z-index:2000; display:none; justify-content:center; align-items:center;}
+        .modal-content{background-color:#2c2c2c; padding:20px; border-radius:8px; width:90%; max-width:500px; display:flex; flex-direction:column; gap:15px; box-shadow: 0 5px 25px rgba(0,0,0,0.4);}
+        .modal-content textarea{width:100%; min-height:120px; background-color:#333; border:1px solid #444; color:#fff; border-radius:5px; padding:10px; font-size:1rem; resize:vertical;}
+        #media-preview{max-height:200px; width:auto; max-width:100%; border-radius:5px; object-fit:contain; align-self:flex-start; display:none;}
+        .modal-actions{display:flex; justify-content:flex-end; gap:10px; align-items:center;}
+        .modal-actions button{border:none; padding:10px 20px; border-radius:5px; cursor:pointer; font-size:.9rem;}
+        #submit-post-btn{background-color:#07c160; color:white;}
+        #submit-post-btn:disabled{background-color:#555; cursor:not-allowed;}
+        #cancel-post-btn{background-color:#555; color:white;}
+        #file-upload-label{background-color:#444; padding:8px 15px; border-radius:5px; cursor:pointer; color:#fff; font-size:.9rem; user-select:none;}
+        #post-file-input{display:none;}
+        .delete-moment-btn{display:none; margin-left:10px; color:#576b95; cursor:pointer; transition:color .2s;}
+        .delete-moment-btn:hover{color:#8a9fc7;}
+        .delete-moment-btn svg{width:16px; height:16px; fill:currentColor; vertical-align:middle;}
+        .user-is-owner .moment-post .delete-moment-btn {display:inline-flex; align-items:center;}
+        .post-footer{display:flex; align-items:center; justify-content:flex-start;}
+        #delete-confirm-modal{position:fixed; top:0; left:0; width:100%; height:100%; background-color:rgba(0,0,0,0.6); z-index:3000; display:none; justify-content:center; align-items:center; transition: opacity 0.2s;}
+        .delete-modal-content{background-color:#2c2c2c; width:80%; max-width:300px; border-radius:8px; text-align:center; overflow:hidden; border:1px solid rgba(255,255,255,0.1); transform:scale(0.95); opacity:0; transition:transform .2s ease,opacity .2s ease;}
+        #delete-confirm-modal.is-visible .delete-modal-content{transform:scale(1); opacity:1;}
+        .delete-modal-text{padding:25px 20px; font-size:1.1rem; color:#f0f0f0; border-bottom:1px solid #3a3a3a;}
+        .delete-modal-actions{display:flex;}
+        .delete-modal-btn{flex-grow:1; padding:15px 10px; background:none; border:none; color:#f0f0f0; font-size:1.1rem; cursor:pointer; transition:background-color .2s;}
+        .delete-modal-btn:active{background-color:#3f3f3f;}
+        #btn-cancel-delete{border-right:1px solid #3a3a3a;}
+        #btn-confirm-delete{color:#e64340; font-weight:500;}
+        .action-popover {
+            position: absolute; right: 45px; top: 50%;
+            transform: translateY(-50%) scale(0.8); opacity: 0;
+            background-color: #4c4c4c; border-radius: 6px; display: flex;
+            overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+            transition: transform 0.15s cubic-bezier(0.215, 0.610, 0.355, 1), opacity 0.15s ease;
+            transform-origin: right center;
+            pointer-events: none;
+        }
+        .action-popover.visible {
+            transform: translateY(-50%) scale(1);
+            opacity: 1;
+            pointer-events: auto;
+        }
+    </style>
+</head>
+<body class="">
+
+    <header class="moments-header">
+        <div class="header-left">
+            <a href="{{ url_for('login') }}" id="auth-status-link" title="登录/退出" class="header-icon-btn">
+                <svg viewBox="0 0 1024 1024"><path d="M724.361317 1024l-448-512 448-512L812.638683 89.373333 392.008 512l420.630683 422.626667L724.361317 1024z"></path></svg>
+            </a>
+            <button id="refresh-btn" title="刷新" class="owner-only header-icon-btn">
+                <svg viewBox="0 0 1024 1024"><path d="M381.8288 18.901489c42.635029-11.310603 86.403882-17.002232 130.205481-17.002232 68.479651 0 135.072325 13.469779 197.999516 40.101323l-8.362458 369.71439L381.8288 18.901489 381.8288 18.901489z" fill="#F57659"></path><path d="M71.201134 255.390621c22.278399-38.284955 49.218982-73.313749 80.134085-104.090707 48.393173-48.396243 104.980983-85.958744 168.285774-111.666242l255.614725 267.305999L71.201134 255.390621 71.201134 255.390621z" fill="#F0B360"></path><path d="M18.900977 642.275066c-11.276834-42.463114-17.000186-86.234013-17.000186-130.276089 0-68.548212 13.502525-135.140886 40.099277-197.933001l369.749182 8.293897L18.900977 642.275066 18.900977 642.275066z" fill="#EFDE58"></path><path d="M255.39011 952.798355c-38.010709-22.1423-72.968895-49.079812-104.021122-80.134085-48.428989-48.325635-85.993536-104.911398-111.664196-168.283728l267.302929-255.513418L255.39011 952.798355 255.39011 952.798355z" fill="#BBEF5C"></path><path d="M512.034281 1022.100744c-68.481697 0-135.072325-13.470803-197.999516-40.031738l8.362458-369.71439 319.843562 392.81348C599.535147 1016.411161 555.80211 1022.100744 512.034281 1022.100744L512.034281 1022.100744z" fill="#61F15E"></path><path d="M448.830797 717.096145l504.036631 51.54905c-22.107507 37.940101-48.976458 72.900334-80.167854 104.019075-48.327682 48.464805-104.980983 86.029352-168.283728 111.734804L448.830797 717.096145 448.830797 717.096145z" fill="#5BE4EE"></path><path d="M612.320335 701.707666l392.81348-319.915193c11.276834 42.499953 16.966417 86.302575 16.966417 130.206504 0 68.753897-13.502525 135.282103-40.066531 198.002586L612.320335 701.707666 612.320335 701.707666z" fill="#5C9BF6"></path><path d="M768.60989 71.235414c37.975916 22.038946 73.004711 48.942689 104.089683 80.0645 48.464805 48.326659 86.027305 104.980983 111.664196 168.284751l-267.302929 255.580956L768.60989 71.235414 768.60989 71.235414z" fill="#6D58F1"></path></svg>
+            </button>
+            <a href="{{ url_for('settings.settings_page') }}" id="settings-btn" title="设置" class="owner-only header-icon-btn">
+                <svg viewBox="0 0 1024 1024"><path d="M591.488 992.768l-4.48 3.2-157.696-3.2-28.672-80.768a70.08 70.08 0 0 0-96.128-39.808l-82.752 35.84-109.248-113.792 36.736-77.376a70.272 70.272 0 0 0-39.808-96.256L25.6 587.328l3.2-157.696 80.64-28.736c17.472-6.208 31.808-19.136 39.296-33.728l2.56-6.784c7.04-17.152 6.4-37.952-2.048-55.68l-35.84-82.816L227.2 112.576l77.312 36.8c17.472 8.32 38.4 8.96 56.32 1.728a70.4 70.4 0 0 0 39.744-41.6L433.92 25.6l157.632 3.2 28.672 80.768a70.08 70.08 0 0 0 96.128 39.808l82.752-35.84 109.184 113.856-36.736 77.376a70.272 70.272 0 0 0 39.808 96.192l83.904 33.152-3.2 157.76-80.64 28.736a70.208 70.208 0 0 0-39.808 96.192l35.84 82.88-113.792 109.312-77.696-36.992a70.016 70.016 0 0 0-95.872 40.448l-28.544 80.32z m-38.528-44.992l18.688-52.544c11.072-31.104 34.304-56.512 62.784-69.248l9.792-4.48a121.856 121.856 0 0 1 93.76 4.096l45.632 25.28 65.6-61.248-24.064-50.816A121.6 121.6 0 0 1 894.08 572.16l49.728-14.336 3.2-89.792-52.928-18.816a121.408 121.408 0 0 1-68.992-166.592l25.024-45.376-61.12-65.728-50.688 24.128a120.32 120.32 0 0 1-92.8 4.48l-9.984-3.776a121.536 121.536 0 0 1-63.808-69.76l-14.272-49.728-89.728-3.2-18.816 52.992a119.296 119.296 0 0 1-62.336 68.736l-9.728 4.416a122.688 122.688 0 0 1-94.464-4.16l-45.248-25.088-65.664 61.248 24.128 50.752c14.08 29.632 15.552 63.808 4.48 92.8l-1.984 5.952A121.6 121.6 0 0 1 126.72 449.28l-49.792 14.4-3.2 89.792 52.992 18.816a121.728 121.728 0 0 1 68.928 166.656l-25.088 45.312 61.184 65.728 50.688-24.128a122.88 122.88 0 0 1 98.688-2.496 121.6 121.6 0 0 1 67.84 71.488l17.792 49.92 86.208 3.072z m-42.56-242.816A194.304 194.304 0 0 1 316.352 510.72a194.368 194.368 0 0 1 194.048-194.24 194.304 194.304 0 0 1 194.048 194.24 194.304 194.304 0 0 1-194.048 194.176z m0-337.088a142.976 142.976 0 0 0-142.72 142.912c0 78.72 64 142.784 142.72 142.784s142.72-64.064 142.72-142.784c0-78.784-64-142.912-142.72-142.912z"></path></svg>
+            </a>
+        </div>
+        <div class="header-title">朋友圈</div>
+        <div class="header-right">
+            <button id="create-post-header-btn" class="owner-only header-icon-btn" title="发布朋友圈">
+                <svg viewBox="0 0 1024 1024"><path d="M960 288H800a32 32 0 0 1-32-32V192a64 64 0 0 0-64-64H320a64 64 0 0 0-64 64v64a32 32 0 0 1-32 32H64a64 64 0 0 0-64 64v512a64 64 0 0 0 64 64h896a64 64 0 0 0 64-64V352a64 64 0 0 0-64-64zM512 800a192 192 0 1 1 0-384 192 192 0 0 1 0 384z" ></path><path d="M512 480a128 128 0 1 0 0 256 128 128 0 0 0 0-256z" ></path></svg>
+             </button>
+        </div>
+    </header>
+
+    <div class="user-profile-header">
+        <div class="user-profile-background">
+            {% if user_profile.background_url %} <img src="{{ url_for('static', filename=user_profile.background_url) }}" alt="朋友圈背景"> {% endif %}
+        </div>
+        <div class="user-profile-info">
+            <span class="user-nickname">{{ user_profile.nickname }}</span>
+            <div class="user-avatar">
+               {% if user_profile.avatar_url %} <img src="{{ url_for('static', filename=user_profile.avatar_url) }}" alt="用户头像"> {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div id="moments-feed">
+        <div class="loading-container" id="loading">
+            <div class="spinner"></div>
+            <p>正在加载朋友圈，请稍候...</p>
+        </div>
+    </div>
+
+    <div id="post-modal">
+        <div class="modal-content">
+            <h3>发布朋友圈</h3>
+            <textarea id="post-text-input" placeholder="分享新鲜事..."></textarea>
+            <img id="media-preview" src="#" alt="图片预览" />
+            <div class="modal-actions">
+                <label for="post-file-input" id="file-upload-label">上传图片/视频</label>
+                <input type="file" id="post-file-input" accept="image/*,video/mp4">
+                <div style="flex-grow: 1;"></div>
+                <button id="cancel-post-btn">取消</button>
+                <button id="submit-post-btn">发布</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="delete-confirm-modal">
+        <div class="delete-modal-content">
+            <div class="delete-modal-text">删除该朋友圈？</div>
+            <div class="delete-modal-actions">
+                <button id="btn-cancel-delete" class="delete-modal-btn">取消</button>
+                <button id="btn-confirm-delete" class="delete-modal-btn">删除</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', async function() {
+        // --- DOM Elements ---
+        const momentsFeed = document.getElementById('moments-feed');
+        const refreshButton = document.getElementById('refresh-btn');
+        const loader = document.getElementById('loading');
+        const authStatusLink = document.getElementById('auth-status-link');
+        const createPostBtn = document.getElementById('create-post-header-btn'); 
+        const postModal = document.getElementById('post-modal');
+        const cancelPostBtn = document.getElementById('cancel-post-btn');
+        const submitPostBtn = document.getElementById('submit-post-btn');
+        const postTextInput = document.getElementById('post-text-input');
+        const postFileInput = document.getElementById('post-file-input');
+        const mediaPreview = document.getElementById('media-preview');
+        const deleteConfirmModal = document.getElementById('delete-confirm-modal');
+        const cancelDeleteBtn = document.getElementById('btn-cancel-delete');
+        const confirmDeleteBtn = document.getElementById('btn-confirm-delete');
+        
+        // --- State and Data ---
+        let momentsData = {}; 
+        let openPopover = null;
+        let isPolling = false;
+        let pollingInterval;
+        let momentIdToDelete = null;
+        const POLLING_RATE = 15000;
+        const ownerNickname = '{{ user_profile.nickname }}';
+        
+        const heartIconSVG = `<svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path></svg>`;
+        const commentIconSVG = `<svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>`;
+        const trashIconSVG = `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" fill="currentColor" d="M5 6C5 5.44772 5.44772 5 6 5H18C18.5523 5 19 5.44772 19 6V7H5V6ZM9 4C9 3.44772 9.44772 3 10 3H14C14.5523 3 15 3.44772 15 4V5H9V4Z M6 8H18V20C18 21.1046 17.1046 22 16 22H8C6.89543 22 6 21.1046 6 20V8ZM10 10H11V19H10V10ZM13 10H14V19H13V10Z"/></svg>`;
+        const loginIconSVG = `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="currentColor"><circle cx="12" cy="7" r="3.5"></circle><path d="M4 21c0-4.2 4.2-7 8-7s8 2.8 8 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
+        const logoutIconSVG = `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" fill="currentColor"><rect x="3" y="3" width="12" height="18" rx="2" ry="2"></rect><polygon points="16,12 21,8.5 21,11 24,11 24,13 21,13 21,15.5" /></svg>`;
+
+        // --- Helper Functions ---
+        const escapeHtml = (unsafe) => (unsafe || '').replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+        const stringToColor = (str) => { let h=0;for(let i=0;i<str.length;i++)h=str.charCodeAt(i)+((h<<5)-h);return'#'+('00000'+(h&0xFFFFFF).toString(16)).slice(-6); };
+        const timeAgo = (ds) => { const s=Math.floor((new Date()-new Date((ds || '').replace(/-/g,'/')))/1000); let i=s/31536000;if(i>1)return Math.floor(i)+" 年前";i=s/2592000;if(i>1)return Math.floor(i)+" 月前";i=s/86400;if(i>1)return Math.floor(i)+" 天前";i=s/3600;if(i>1)return Math.floor(i)+" 小时前";i=s/60;if(i>1)return Math.floor(i)+" 分钟前";return"刚刚"; };
+        
+        function closeOpenPopover() {
+            if (openPopover) {
+                openPopover.classList.remove('visible');
+                const parent = openPopover.parentNode;
+                if (parent) parent.removeChild(openPopover);
+                openPopover = null;
+            }
+        }
+
+        // --- v8.0 REFACTOR: 访客与主人身份识别核心 ---
+        async function getCurrentNickname() {
+            const isOwner = document.body.classList.contains('user-is-owner');
+            if (isOwner) {
+                return ownerNickname;
+            }
+            
+            let visitorName = sessionStorage.getItem('visitorNickname');
+            if (visitorName) {
+                return visitorName;
+            }
+
+            visitorName = prompt('作为访客，请输入你的昵称来进行评论或点赞：', '');
+            if (visitorName && visitorName.trim()) {
+                visitorName = visitorName.trim();
+                if (visitorName === ownerNickname) {
+                    alert('不能使用主人的昵称哦，请换一个吧！');
+                    return null;
+                }
+                sessionStorage.setItem('visitorNickname', visitorName);
+                return visitorName;
+            }
+            return null; // 用户取消或输入为空
+        }
+        
+        // --- Authentication ---
+        async function checkAndSetAuthState() {
+            try {
+                const response = await fetch("{{ url_for('auth_status') }}");
+                if (!response.ok) throw new Error('认证服务器连接失败');
+                const data = await response.json();
+                document.body.classList.toggle('user-is-owner', data.is_logged_in);
+                authStatusLink.title = data.is_logged_in ? '退出' : '登录';
+                authStatusLink.href = data.is_logged_in ? "{{ url_for('logout') }}" : "{{ url_for('login') }}";
+                if (!data.is_logged_in) {
+                    authStatusLink.innerHTML = loginIconSVG; // 未登录时显示登录图标
+                }
+            } catch (error) {
+                console.error("Auth check failed:", error);
+                document.body.classList.remove('user-is-owner');
+                authStatusLink.title = '登录 (错误)'; authStatusLink.href = "{{ url_for('login') }}";
+                // 不修改现有图标，避免影响已定 UI
+            }
+        }
+        
+        // --- Polling Control ---
+        function startPolling() {
+            if (isPolling) return;
+            isPolling = true;
+            console.log(`启动轮询，每 ${POLLING_RATE / 1000} 秒刷新一次。`);
+            pollingInterval = setInterval(() => fetchMoments(false, true), POLLING_RATE);
+        }
+
+        function stopPolling() {
+            if (!isPolling) return;
+            isPolling = false;
+            clearInterval(pollingInterval);
+            console.log("页面不可见或无操作，停止轮询。");
+        }
+
+        // --- Rendering Logic ---
+        function updateAndRenderMoment(momentId, updatedData) {
+            const postElem = document.querySelector(`.moment-post[data-id="${momentId}"]`);
+            if (!postElem || !updatedData) return;
+
+            momentsData[momentId] = { ...momentsData[momentId], ...updatedData };
+            postElem.querySelector('.interactions-wrapper').innerHTML = renderInteractions(momentsData[momentId]);
+        }
+
+        function renderAllMoments(data) {
+            const newMomentsData = data.reduce((acc, moment) => { acc[moment.id] = moment; return acc; }, {});
+            if (JSON.stringify(newMomentsData) === JSON.stringify(momentsData)) {
+                console.log("轮询：朋友圈数据无变化。");
+                return;
+            }
+            
+            console.log("发现数据更新，正在刷新UI...");
+            momentsFeed.innerHTML = '';
+            momentsData = newMomentsData;
+
+            if (data && data.length > 0) {
+                 data.forEach(moment => momentsFeed.appendChild(renderMoment(moment)));
+            } else {
+                 momentsFeed.innerHTML = '<div class="empty-message"><p>未能加载到任何朋友圈。</p></div>';
+            }
+        }
+
+        function renderMoment(moment) {
+            const momentElement = document.createElement('div');
+            momentElement.className = 'moment-post';
+            momentElement.setAttribute('data-id', moment.id);
+            momentElement.setAttribute('data-author', moment.author);
+
+            let mediaHtml = '';
+            if (moment.image_url) {
+                const url = moment.image_url;
+                mediaHtml = url.toLowerCase().endsWith('.mp4') 
+                    ? `<video src="${url}" class="post-video" autoplay muted loop playsinline controls></video>` 
+                    : `<img src="${url}" alt="Post media" class="post-image" loading="lazy"/>`;
+            }
+            
+            const avatarHtml = moment.avatar_url 
+                ? `<img src="${moment.avatar_url}" alt="${moment.author}" class="avatar" loading="lazy">` 
+                : `<div class="avatar" style="background-color:${stringToColor(moment.author)}; font-size: 20px; color: white; display:flex; align-items:center; justify-content:center;">${escapeHtml(moment.author).charAt(0)}</div>`;
+
+            const deleteButtonHtml = `<a href="#" class="delete-moment-btn" title="删除">${trashIconSVG}</a>`;
+
+            momentElement.innerHTML = `
+                ${avatarHtml}
+                <div class="post-main">
+                    <div class="author-name">${escapeHtml(moment.author)}</div>
+                    <p class="post-text">${escapeHtml(moment.post_text).replace(/\n/g, '<br>')}</p>
+                    ${mediaHtml}
+                    <div class="post-footer">
+                        <span class="timestamp">${timeAgo(moment.timestamp)}</span>
+                        ${deleteButtonHtml}
+                        <div style="flex-grow: 1;"></div>
+                        <div class="post-actions"><button class="action-btn toggle-actions-btn">..</button></div>
+                    </div>
+                    <div class="interactions-wrapper">${renderInteractions(moment)}</div>
+                    <div class="comment-input-container" style="display: none;"></div>
+                </div>`;
+            return momentElement;
+        }
+
+        function renderInteractions(moment) {
+            const likes = moment.likes || [];
+            const comments = moment.comments || [];
+            if (likes.length === 0 && comments.length === 0) return '';
+            
+            const likesHtml = likes.length > 0 ? `<div class="likes-section"><span class="like-icon">${heartIconSVG}</span>${likes.map(name => `<span class="liker-name">${escapeHtml(name)}</span>`).join(',&nbsp;')}</div>` : '';
+            const commentsHtml = comments.map(c => `<div class="comment" data-author="${escapeHtml(c.author)}"><span class="comment-author">${escapeHtml(c.author)}</span>${c.reply_to ? ` 回复 <span class="comment-author">${escapeHtml(c.reply_to)}</span>` : ''}: <span class="comment-text">${escapeHtml(c.text)}</span></div>`).join('');
+            
+            return `<div class="interactions-container">${likesHtml}${commentsHtml ? `<div class="comments-section">${commentsHtml}</div>` : ''}</div>`;
+        }
+
+        async function showCommentInput(postElem, replyTo = null) {
+            closeOpenPopover();
+            
+            const currentNickname = await getCurrentNickname();
+            if (!currentNickname) return; // 用户取消输入昵称
+
+            document.querySelectorAll('.comment-input-container').forEach(c => c.style.display = 'none');
+            
+            const inputContainer = postElem.querySelector('.comment-input-container');
+            inputContainer.style.display = 'block';
+            let placeholder = '发表评论...';
+            if (replyTo) {
+                // 不回复自己
+                if (replyTo === currentNickname) return;
+                placeholder = `回复 ${replyTo}:`;
+            }
+
+            const replyToData = replyTo ? `data-reply-to="${escapeHtml(replyTo)}"` : '';
+            inputContainer.innerHTML = `<form class="comment-form" ${replyToData}><input type="text" class="comment-input" placeholder="${placeholder}" autofocus><button type="submit" class="comment-submit">发送</button><button type="button" class="comment-cancel">取消</button></form>`;
+            
+            inputContainer.querySelector('.comment-input')?.focus();
+            inputContainer.querySelector('.comment-cancel')?.addEventListener('click', () => {
+                inputContainer.style.display = 'none';
+                inputContainer.innerHTML = '';
+            }, { once: true });
+        }
+
+        // --- API Calls & Handlers ---
+        async function fetchMoments(isForce = false, isSilent = false) {
+            if (isForce) refreshButton.classList.add('is-refreshing');
+            else if (!isSilent && Object.keys(momentsData).length === 0) loader.style.display = 'flex';
+
+            try {
+                const url = isForce ? `{{ url_for('get_or_generate_moments') }}?force=true` : `{{ url_for('get_or_generate_moments') }}`;
+                const response = await fetch(url);
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(err.error || `网络错误: ${response.statusText}`);
+                }
+                const data = await response.json();
+                renderAllMoments(data);
+            } catch (error) {
+                if (!isSilent) loader.innerHTML = `<p class="error-message">加载失败: ${error.message}</p>`;
+                console.error("加载朋友圈失败:", error);
+            } finally {
+                loader.style.display = 'none';
+                if (isForce) refreshButton.classList.remove('is-refreshing');
+            }
+        }
+        
+        async function handleLike(momentId) {
+            const nickname = await getCurrentNickname();
+            if (!nickname) return; // 用户未提供昵称
+
+            try {
+                const response = await fetch(`/api/moment/${momentId}/like`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ nickname: nickname })
+                });
+                const updatedMoment = await response.json();
+                if (!response.ok) throw new Error(updatedMoment.error || "点赞失败");
+                updateAndRenderMoment(momentId, updatedMoment);
+            } catch (error) {
+                alert(error.message);
+                console.error("Like failed:", error);
+            }
+        }
+
+        async function handleCommentSubmit(form) {
+            const nickname = await getCurrentNickname();
+            if (!nickname) return;
+
+            const momentPost = form.closest('.moment-post');
+            const momentId = momentPost.dataset.id;
+            const input = form.querySelector('.comment-input');
+            const text = input.value.trim();
+            if (!text) return;
+            
+            const payload = {
+                nickname: nickname,
+                text: text,
+                reply_to: form.dataset.replyTo || null
+            };
+            
+            const submitBtn = form.querySelector('.comment-submit');
+            submitBtn.disabled = true;
+            input.disabled = true;
+
+            try {
+                const response = await fetch(`/api/moment/${momentId}/comment`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const updatedMoment = await response.json();
+                if (!response.ok) throw new Error(updatedMoment.error || "评论失败");
+                updateAndRenderMoment(momentId, updatedMoment);
+                // 轮询会处理后续更新，无需手动刷新
+                form.parentElement.style.display = 'none';
+                form.parentElement.innerHTML = '';
+            } catch (error) {
+                alert(error.message);
+                console.error("Comment failed:", error);
+                submitBtn.disabled = false;
+                input.disabled = false;
+            }
+        }
+
+     
+        // --- Event Listeners ---
+        document.addEventListener('click', e => {
+            if (!e.target.closest('.post-actions')) {
+                closeOpenPopover();
+            }
+        });
+        refreshButton.addEventListener('click', () => fetchMoments(true, false));
+
+        momentsFeed.addEventListener('click', async e => {
+            const target = e.target;
+            const post = target.closest('.moment-post');
+            if (!post) return;
+
+            const momentId = post.dataset.id;
+            const moment = momentsData[momentId];
+            if (!moment) return;
+            
+            const actionBtn = target.closest('.toggle-actions-btn');
+            if (actionBtn) {
+                e.stopPropagation();
+                if (openPopover && actionBtn.parentElement.contains(openPopover)) {
+                    closeOpenPopover();
+                    return;
+                }
+                closeOpenPopover();
+                
+                const popover = document.createElement('div');
+                popover.className = 'action-popover';
+                
+                const currentNickname = await getCurrentNickname(); // 预先获取昵称
+                const isLiked = currentNickname && moment.likes && moment.likes.includes(currentNickname);
+                const likeText = isLiked ? '取消' : '赞';
+                const likedClass = isLiked ? 'is-liked' : '';
+                
+                popover.innerHTML = `
+                    <button class="popover-btn like-btn ${likedClass}">${heartIconSVG} ${likeText}</button>
+                    <button class="popover-btn comment-btn">${commentIconSVG} 评论</button>
+                `;
+                actionBtn.parentElement.appendChild(popover);
+                
+                requestAnimationFrame(() => popover.classList.add('visible'));
+                openPopover = popover;
+                return;
+            }
+            
+            const popoverBtn = target.closest('.popover-btn');
+            if (popoverBtn) {
+                if (popoverBtn.classList.contains('like-btn')) {
+                    handleLike(momentId);
+                } else if (popoverBtn.classList.contains('comment-btn')) {
+                    showCommentInput(post);
+                }
+                closeOpenPopover();
+                return;
+            }
+            
+            const commentElem = target.closest('.comment');
+            if (commentElem) {
+                const author = commentElem.dataset.author;
+                showCommentInput(post, author); // showCommentInput内部会处理自己回复自己的情况
+                return;
+            }
+
+            const deleteBtn = target.closest('.delete-moment-btn');
+            if (deleteBtn){
+                e.preventDefault();
+                confirmDeleteBtn.dataset.momentId = momentId;            
+                deleteConfirmModal.style.opacity = '0';
+                deleteConfirmModal.style.display = 'flex';
+                requestAnimationFrame(() => {
+                    deleteConfirmModal.classList.add('is-visible');
+                    deleteConfirmModal.style.opacity = '1';
+                });
+            }
+        });
+
+        momentsFeed.addEventListener('submit', e => {
+            if (e.target.matches('.comment-form')) {
+                e.preventDefault();
+                handleCommentSubmit(e.target);
+            }
+        });
+
+        // --- Post Modal Logic (Owner Only) ---
+        if (createPostBtn) createPostBtn.addEventListener('click', () => {
+             postModal.style.display = 'flex';
+             postTextInput.focus();
+        });
+        cancelPostBtn.addEventListener('click', () => postModal.style.display = 'none');
+        postFileInput.addEventListener('change', () => {
+            const file = postFileInput.files[0];
+            if (file) {
+                mediaPreview.src = URL.createObjectURL(file);
+                mediaPreview.style.display = 'block';
+                mediaPreview.onload = () => URL.revokeObjectURL(mediaPreview.src);
+            }
+        });
+        submitPostBtn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            const text = postTextInput.value;
+            const file = postFileInput.files[0];
+            if (!text && !file) return;
+
+            submitPostBtn.disabled = true;
+            submitPostBtn.textContent = '发布中...';
+
+            const formData = new FormData();
+            formData.append('nickname', ownerNickname);
+            formData.append('post_text', text);
+            if (file) formData.append('post_media', file);
+
+            try {
+                const response = await fetch(`{{ url_for('create_user_post') }}`, { method: 'POST', body: formData });
+                const result = await response.json();
+                if (!response.ok || !result.success) throw new Error(result.error || '发布失败');
+                
+                const newMomentData = result.moment;
+                momentsData[newMomentData.id] = newMomentData;
+                const newMomentElement = renderMoment(newMomentData);
+                
+                const firstElement = momentsFeed.querySelector('.moment-post, .empty-message');
+                if (firstElement) {
+                    momentsFeed.insertBefore(newMomentElement, firstElement);
+                     if(firstElement.matches('.empty-message')) firstElement.remove();
+                } else {
+                    momentsFeed.appendChild(newMomentElement);
+                }
+                postModal.style.display = 'none';
+                postTextInput.value = '';
+                postFileInput.value = '';
+                mediaPreview.style.display = 'none';
+            } catch (error) {
+                alert(error.message);
+            } finally {
+                submitPostBtn.disabled = false;
+                submitPostBtn.textContent = '发布';
+            }
+        });
+        
+        // --- Delete Modal Logic ---
+        function hideDeleteModal() {
+            // 直接、立即隐藏，不再等待动画事件
+            deleteConfirmModal.style.display = 'none'; 
+            deleteConfirmModal.classList.remove('is-visible');
+        }
+
+
+        cancelDeleteBtn.addEventListener('click', hideDeleteModal);
+        confirmDeleteBtn.addEventListener('click', async function() {
+            // 【核心修改】直接从按钮自身读取 ID
+            const momentId = this.dataset.momentId;
+            if (!momentId) return;
+
+            // 步骤 A: 进入“删除中”状态，防止重复点击
+            this.disabled = true;
+            this.textContent = '删除中...';
+
+            try {
+                // 步骤 B: 使用刚刚获取的 momentId 调用 API
+                const response = await fetch(`/api/moment/${momentId}/delete`, {
+                    method: 'DELETE'
+                });
+
+                // 步骤 C: 检查响应状态 (成功的响应是 204 或其他 2xx 状态码)
+                if (!response.ok && response.status !== 204) {
+                    const errorResult = await response.json().catch(() => ({ error: `服务器错误，状态码: ${response.status}` }));
+                    throw new Error(errorResult.error);
+                }
+
+                // 步骤 D: 如果请求成功，安全地操作前端UI
+                hideDeleteModal();
+                const postElement = document.querySelector(`.moment-post[data-id="${momentId}"]`);
+                if (postElement) {
+                    postElement.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+                    postElement.style.opacity = '0';
+                    postElement.style.transform = 'scale(0.95)';
+                    
+                    postElement.addEventListener('transitionend', () => {
+                        postElement.remove();
+                        if (momentsData[momentId]) {
+                            delete momentsData[momentId];
+                        }
+                    }, { once: true });
+                }
+            } catch (error) {
+                // 步骤 E: 如果 try 块中发生任何错误，显示错误信息
+                console.error("删除失败:", error);
+                alert(`删除失败: ${error.message}`);
+                hideDeleteModal(); // 出错了也要关闭弹窗
+            } finally {
+                // 步骤 F: 【核心】无论成功还是失败，最终都必须恢复按钮状态
+                this.disabled = false;
+                this.textContent = '删除';
+                // 【核心修改】清理按钮上绑定的 ID
+                delete this.dataset.momentId;
+            }
+        });
+
+        
+        // --- Page Lifecycle & Initial Load ---
+        document.addEventListener('visibilitychange', () => document.hidden ? stopPolling() : startPolling());
+        
+        await checkAndSetAuthState();
+        await fetchMoments(false, false);
+        startPolling();
+    });
+    </script>
+</body>
+</html>

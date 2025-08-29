@@ -1,0 +1,103 @@
+<!-- templates/logining.html -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/png" href="https://i.postimg.cc/5NXjvbkf/5-E0-B50824145-F992-ABCD90247-E6933-BB.png">
+    <title>登录 - 朋友圈设置</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        .login-wrapper {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        .login-container {
+            width: 90%;
+            max-width: 360px;
+            padding: 40px;
+            background-color: #2c2c2c;
+            border-radius: 8px;
+            text-align: center;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        }
+        .login-container h1 {
+            color: #fff;
+            margin-bottom: 25px;
+            font-size: 1.5rem;
+        }
+        .login-form input {
+            width: 100%;
+            padding: 12px;
+            margin-bottom: 20px;
+            background-color: #333;
+            border: 1px solid #555;
+            color: #fff;
+            border-radius: 5px;
+            font-size: 1rem;
+        }
+        .login-form button {
+            width: 100%;
+            padding: 12px;
+            background-color: #07c160;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 1rem;
+            cursor: pointer;
+        }
+        /* --- 【【【新增】】】 访客模式按钮样式 --- */
+        .guest-mode-btn {
+            display: block; /* 使其占据整行 */
+            width: 100%;
+            padding: 12px;
+            margin-top: 15px; /* 与登录按钮的间距 */
+            background-color: #555; /* 灰色背景 */
+            color: white;
+            border-radius: 5px;
+            font-size: 1rem;
+            text-align: center;
+            text-decoration: none; /* 去除链接下划线 */
+            cursor: pointer;
+            box-sizing: border-box; /* 确保 padding 不会影响总宽度 */
+        }
+        .login-error {
+            color: #ff4d4f;
+            margin-top: 15px;
+            text-align: left;
+        }
+        /* 【新增】底部作者标注（低存在感） */
+        .page-footer {
+            position: fixed;
+            left: 0;
+            right: 0;
+            bottom: 12px;
+            text-align: center;
+            color: #9a9a9a;
+            font-size: 12px;
+            opacity: 0.5;
+            pointer-events: none; /* 避免干扰点击 */
+        }
+    </style>
+</head>
+<body>
+    <div class="login-wrapper">
+        <div class="login-container">
+            <h1>进入朋友圈设置</h1>
+            <form method="post" class="login-form">
+                <input type="password" name="password" placeholder="请输入密码" required>
+                <button type="submit">登录</button>
+            </form>
+            <a href="{{ url_for('index') }}" class="guest-mode-btn">访客模式</a>
+
+            {% if error %}
+                <p class="login-error">{{ error }}</p>
+            {% endif %}
+        </div>
+    </div>
+    <!-- 【新增】低调页脚作者标注 -->
+    <footer class="page-footer">作者：小鱼</footer>
+</body>
+</html>

@@ -1619,7 +1619,8 @@ def get_default_config():
         "IGNORE_GROUP_CHAT_FOR_AUTO_MESSAGE": False,
         "ENABLE_SENSITIVE_CONTENT_CLEARING": True,
         "ENABLE_GROUP_AT_REPLY_IN_REPLIES": True,
-        "ENABLE_TEXT_COMMANDS": False
+        "ENABLE_TEXT_COMMANDS": False,
+        "PEXELS_API_KEY": ""
     }
 
 def validate_config():

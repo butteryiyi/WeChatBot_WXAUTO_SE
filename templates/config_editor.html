@@ -2,6 +2,7 @@
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/png" href="https://i.postimg.cc/5NXjvbkf/5-E0-B50824145-F992-ABCD90247-E6933-BB.png">
 <!-----------------------------------------------------------------------
 - Copyright (C) 2025, iwyxdxl
 - Licensed under GNU GPL-3.0 or higher, see the LICENSE file for details.
@@ -90,7 +91,13 @@
             flex-shrink: 0;
         }
         .header-bar .header-title {
-            flex-grow: 1;
+        flex-grow: 1;
+        display: flex; 
+        align-items: center; 
+        }
+        #header-logo {
+        height: 40px; 
+        margin-right: 15px; 
         }
         .header-bar .buttons {
             display: flex;
@@ -2427,8 +2434,8 @@ if (switchPromptModal) {
                                 <input type="checkbox" name="ENABLE_GROUP_AT_REPLY_IN_REPLIES" ${data.ENABLE_GROUP_AT_REPLY_IN_REPLIES ? 'checked' : ''}>
                                 <small class="form-text text-muted" style="margin-top: 5px;">
                                     启用后，机器人回复时会自动以<strong style="color: #007bff;">可点击的“真艾特”</strong>形式提及发言人。（需要微信在可见区域）
-                                    拍一拍功能也上线了！！！<br>
-                                    使用说明：把以下提示词加入到角色Prompt设定中即可 <br>【在微信聊天时，当你感到着急、根强调提醒或根俏皮地互动时，可以在话中加入［拍一拍对方］，这会触发一个真实的拍一拍动作，而不是发送文字。正确示例（输出带$符号）：［拍一拍对方］在干什么？$理理我——】
+                                    拍一拍、撤回功能也上线了！！！<br>
+                                    使用说明请看文件里的readme.md或者移步答疑Q群：151616066
                                 </small>
                             </div>
                             <!-- ========== [新代码块结束] ========== -->
@@ -2968,7 +2975,10 @@ if (switchPromptModal) {
     <button id="mobileMenuToggle">☰</button> 
 
     <div class="header-bar">
-        <div class="header-title"><h1>WeChatBot配置编辑器 v3.23.6</h1></div>
+        <div class="header-title">
+            <img id="header-logo" src="https://i.postimg.cc/5NXjvbkf/5-E0-B50824145-F992-ABCD90247-E6933-BB.png" alt="WeChatBot Logo">
+            <h1>WeChatBot配置编辑器 v3.24.1</h1>
+        </div>
         <div class="buttons">
             <button id="botButton" class="nav-button">Start Bot</button>
             <button type="submit" form="configForm" id="saveConfigButton" class="nav-button" style="background-color: #4CAF50;">保存配置</button>
@@ -3227,6 +3237,14 @@ if (switchPromptModal) {
                     <div class="form-group">
                         <label>API Key:</label>
                         <input type="text" placeholder="sk-xxxxxxxxxx" name="MOONSHOT_API_KEY" value="{{ config.MOONSHOT_API_KEY }}">
+                    </div>
+                    <div class="form-group">
+                        <label>朋友圈的Pexels 图片API Key:</label>
+                        <input type="text" placeholder="Pexels API Key，例如：563492ad6f91700001000001xxxxxxxxxxxxxx" name="PEXELS_API_KEY" value="{{ config.get('PEXELS_API_KEY', '') }}">
+                        <small>
+                            要使用朋友圈图片功能，请前往 Pexels 开发者平台注册并申请密钥：
+                            <a href="https://www.pexels.com/api/" target="_blank">Pexels API</a> → 登录/注册 → 点击右上角 “Get API Key” → 复制生成的 API Key 并粘贴到上方输入框，保存配置即可生效。
+                        </small>
                     </div>
                     <div class="form-group">
                         <label>温度 (0-1):</label>

@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/png" href="https://i.postimg.cc/5NXjvbkf/5-E0-B50824145-F992-ABCD90247-E6933-BB.png">
+    <title>朋友圈设置</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        /* [样式部分未作修改，省略] */
+        body { padding-bottom: 50px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+        .settings-container { max-width: 720px; margin: 20px auto; padding: 0 20px; }
+        .settings-top-header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 20px; border-bottom: 1px solid #3a3a3a; margin-bottom: 20px;}
+        .settings-top-header h1 { color: #fff; margin:0; }
+        .nav-link { color: #07c160; text-decoration: none; font-size: 1rem; }
+        .settings-section { background-color: #272727; padding: 20px; border-radius: 8px; margin-bottom: 25px; }
+        .settings-section h2 { margin-top: 0; padding-bottom: 10px; border-bottom: 1px solid #444; color: #e8e8e8; }
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; margin-bottom: 8px; font-weight: 500; }
+        .form-group input[type="text"], .form-group input[type="file"], .form-group textarea { width: 100%; box-sizing: border-box; padding: 8px; background-color: #333; border: 1px solid #555; color: #fff; border-radius: 5px; }
+        .form-group textarea { min-height: 120px; font-family: inherit; line-height: 1.6; resize: vertical;}
+        .form-group .preview { margin-top: 10px; max-width: 150px; max-height: 150px; border-radius: 5px; background-color:#444; }
+        .form-actions { text-align: right; }
+        .btn-submit { background-color: #07c160; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-weight: 500; }
+        .btn-submit:disabled { background-color: #555; cursor: not-allowed; }
+        .message { margin-top: 10px; font-size: 0.9rem; display: none; padding: 8px 12px; border-radius: 4px; }
+        .message.success { color: #fff; background-color: #07c160; }
+        .message.error { color: #fff; background-color: #ff4d4f; }
+        .character-list { list-style: none; padding: 0; }
+        .character-item { display: flex; align-items: center; background-color: #2e2e2e; padding: 15px; border-radius: 8px; margin-bottom: 15px; }
+        .character-avatar { width: 60px; height: 60px; border-radius: 8px; margin-right: 15px; background-color: #444; object-fit: cover; }
+        .character-info { flex-grow: 1; }
+        .character-name, .relationship-header { font-size: 1.1rem; font-weight: 500; color: #e8e8e8; margin-bottom: 10px; }
+
+        /* 【新增】人际关系部分样式 */
+        .relationship-item { background-color: #2e2e2e; padding: 15px; border-radius: 8px; margin-bottom: 15px; }
+        .relationship-actions { margin-top: 10px; text-align: right; }
+
+        /* 【新增】底部作者标注（低存在感） */
+        .page-footer { text-align: center; color: #9a9a9a; font-size: 12px; opacity: 0.5; margin-top: 10px; }
+        .page-footer a { color: inherit; text-decoration: none; }
+    </style>
+</head>
+<body>
+    <div class="settings-container">
+        <!-- Header (未修改) -->
+        <header class="settings-top-header">
+            <h1>朋友圈设置</h1>
+            <div>
+                <a href="{{ url_for('index') }}" class="nav-link" style="margin-right: 20px;">返回朋友圈</a>
+                <a href="{{ url_for('logout') }}" class="nav-link">退出登录</a>
+            </div>
+        </header>
+        
+        <!-- User Profile Section (未修改) -->
+        <section class="settings-section">
+            <h2>用户设置</h2>
+            <form id="user-profile-form">
+                <!-- ... content is identical to before ... -->
+                <div id="user-profile-message" class="message"></div>
+                <div class="form-group">
+                    <label for="nickname">我的昵称</label>
+                    <input type="text" id="nickname" name="nickname" value="{{ user_profile.nickname }}">
+                </div>
+                 <div class="form-group">
+                    <label for="avatar-file">我的头像 (右侧显示)</label>
+                    <input type="file" id="avatar-file" name="avatar_file" accept="image/*">
+                    {% if user_profile.avatar_url %}
+                    <img id="avatar-preview" src="{{ url_for('static', filename=user_profile.avatar_url) }}" alt="头像预览" class="preview">
+                    {% endif %}
+                </div>
+                <div class="form-group">
+                    <label for="background-file">朋友圈背景</label>
+                    <input type="file" id="background-file" name="background_file" accept="image/*">
+                     {% if user_profile.background_url %}
+                    <img id="background-preview" src="{{ url_for('static', filename=user_profile.background_url) }}" alt="背景预览" class="preview">
+                    {% endif %}
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn-submit">保存用户设置</button>
+                </div>
+            </form>
+        </section>
+
+        <!-- Character Avatars Section (未修改) -->
+        <section class="settings-section">
+            <h2>角色头像设置</h2>
+            <ul class="character-list">
+                {% for char in characters %}
+                <li class="character-item">
+                    <!-- ... content is identical to before ... -->
+                    <img id="avatar-img-{{ loop.index }}" src="{{ url_for('static', filename='avatars/' + avatar_map.get(char)) if avatar_map.get(char) else 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7' }}" class="character-avatar" alt="{{ char }} Avatar">
+                    <div class="character-info">
+                        <div class="character-name">{{ char }}</div>
+                        <form class="upload-form" data-character-name="{{ char }}" data-form-id="{{ loop.index }}">
+                            <input type="file" name="avatar_file" accept="image/*" required>
+                            <button type="submit">上传</button>
+                        </form>
+                        <div id="message-{{ loop.index }}" class="message"></div>
+                    </div>
+                </li>
+                {% endfor %}
+                {% if not characters %}
+                <p style="text-align: center; color: #888;">未能加载到任何角色信息。</p>
+                {% endif %}
+            </ul>
+        </section>
+
+        <!-- 【【【新增】】】 角色人际关系设置 -->
+        <section class="settings-section">
+            <h2>角色人际关系设置</h2>
+            <div id="relationships-list">
+                {% for char in characters %}
+                <div class="relationship-item" data-character-name="{{ char }}">
+                    <h3 class="relationship-header">{{ char }}</h3>
+                    <div class="form-group">
+                        <textarea
+                            class="relationship-text"
+                            placeholder="请按以下格式填写，每段关系占一行：&#10;NPC名字1: 关系描述 (例如：青梅竹马、上司)&#10;NPC名字2: 关系描述 (例如：亦敌亦友的对手)&#10;留空则表示该角色没有预设的社交关系。"
+                        ></textarea>
+                    </div>
+                    <div class="relationship-actions">
+                         <div id="rel-message-{{ loop.index }}" class="message" style="text-align: left; margin-bottom: 10px;"></div>
+                        <button class="btn-submit save-relationship-btn" data-form-id="{{ loop.index }}">保存 {{ char }} 的关系</button>
+                    </div>
+                </div>
+                {% endfor %}
+                {% if not characters %}
+                <p style="text-align: center; color: #888;">未能加载到任何角色信息，无法设置人际关系。</p>
+                {% endif %}
+            </div>
+        </section>
+
+        <!-- 【新增】低调页脚作者标注 -->
+        <footer class="page-footer">作者：小鱼</footer>
+    </div>
+
+    <script>
+    // --- 【新增】人际关系管理 ---
+    async function loadAndPopulateRelationships() {
+        try {
+            const response = await fetch("{{ url_for('settings.get_all_relationships') }}");
+            if (!response.ok) throw new Error('无法加载人际关系数据');
+            const result = await response.json();
+            if (result.success) {
+                const relationships = result.data;
+                document.querySelectorAll('.relationship-item').forEach(item => {
+                    const charName = item.dataset.characterName;
+                    const textarea = item.querySelector('.relationship-text');
+                    if (relationships[charName]) {
+                        textarea.value = relationships[charName];
+                    }
+                });
+            } else {
+                console.error('获取人际关系失败:', result.error);
+            }
+        } catch (error) {
+            console.error('获取人际关系网络错误:', error);
+        }
+    }
+
+    document.querySelectorAll('.save-relationship-btn').forEach(button => {
+        button.addEventListener('click', async function(e) {
+            e.preventDefault();
+            const btn = e.target;
+            const container = btn.closest('.relationship-item');
+            const characterName = container.dataset.characterName;
+            const textarea = container.querySelector('textarea');
+            const relationshipsText = textarea.value;
+            const formId = btn.dataset.formId;
+            const messageEl = document.getElementById(`rel-message-${formId}`);
+
+            btn.disabled = true;
+            btn.textContent = '保存中...';
+            messageEl.style.display = 'none';
+
+            try {
+                // 前端简单校验(可选，后端为主)
+                 const lines = relationshipsText.trim().split('\n');
+                 for(const line of lines) {
+                    if (line.trim() && !line.includes(':')) {
+                         throw new Error("格式错误，每行都必须包含冒号 ':' 来分隔名字和描述。");
+                    }
+                 }
+
+                const response = await fetch("{{ url_for('settings.update_character_relationship') }}", {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        character_name: characterName,
+                        relationships_text: relationshipsText
+                    })
+                });
+
+                const result = await response.json();
+                if (response.ok) {
+                    messageEl.textContent = result.message;
+                    messageEl.className = 'message success';
+                } else {
+                    throw new Error(result.error || '未知错误');
+                }
+            } catch (error) {
+                messageEl.textContent = '保存失败: ' + error.message;
+                messageEl.className = 'message error';
+            } finally {
+                messageEl.style.display = 'block';
+                btn.disabled = false;
+                btn.textContent = `保存 ${characterName} 的关系`;
+            }
+        });
+    });
+
+
+    // --- 原有JS代码 (大部分保持不变) ---
+    document.addEventListener('DOMContentLoaded', function() {
+        // 首先加载并填充人际关系
+        loadAndPopulateRelationships();
+
+        // 用户资料表单提交
+        document.getElementById('user-profile-form').addEventListener('submit', function(e) {
+            // ... 代码与之前完全相同 ...
+            e.preventDefault();
+            const form = e.target;
+            const formData = new FormData(form);
+            const messageEl = document.getElementById('user-profile-message');
+            const submitBtn = form.querySelector('.btn-submit');
+            submitBtn.disabled = true;
+            submitBtn.textContent = '保存中...';
+            messageEl.style.display = 'none';
+            fetch("{{ url_for('settings.update_user_profile') }}", { method: 'POST', body: formData, })
+            .then(response => { if (!response.ok) { throw new Error(`服务器响应错误: ${response.status}`); } return response.json(); })
+            .then(data => {
+                if (data.success) { messageEl.textContent = data.message; messageEl.className = 'message success'; } 
+                else { messageEl.textContent = '保存失败: ' + data.error; messageEl.className = 'message error'; }
+                messageEl.style.display = 'block';
+            })
+            .catch(error => { messageEl.textContent = '发生错误: ' + error.message; messageEl.className = 'message error'; messageEl.style.display = 'block'; })
+            .finally(() => { submitBtn.disabled = false; submitBtn.textContent = '保存用户设置'; });
+        });
+
+        // 角色头像上传表单
+        document.querySelectorAll('.upload-form').forEach(form => {
+            form.addEventListener('submit', function(event) {
+                // ... 代码与之前完全相同 ...
+                event.preventDefault();
+                const characterName = this.dataset.characterName;
+                const formId = this.dataset.formId;
+                const fileInput = this.querySelector('input[type="file"]');
+                const messageEl = document.getElementById(`message-${formId}`);
+                const avatarImgEl = document.getElementById(`avatar-img-${formId}`);
+                if (fileInput.files.length === 0) {
+                    messageEl.textContent = '请先选择一个图片文件。';
+                    messageEl.className = 'message error';
+                    messageEl.style.display = 'block';
+                    return;
+                }
+                const formData = new FormData();
+                formData.append('character_name', characterName);
+                formData.append('avatar_file', fileInput.files[0]);
+                fetch("{{ url_for('settings.upload_avatar') }}", { method: 'POST', body: formData })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        messageEl.textContent = data.message;
+                        messageEl.className = 'message success';
+                        avatarImgEl.src = data.avatar_url + '?t=' + new Date().getTime();
+                    } else {
+                        messageEl.textContent = '上传失败: ' + data.error;
+                        messageEl.className = 'message error';
+                    }
+                    messageEl.style.display = 'block';
+                    fileInput.value = '';
+                }).catch(error => {
+                    messageEl.textContent = '上传时发生网络错误。';
+                    messageEl.className = 'message error';
+                    messageEl.style.display = 'block';
+                });
+            });
+        });
+    });
+    </script>
+</body>
+</html>

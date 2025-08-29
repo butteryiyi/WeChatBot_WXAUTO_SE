@@ -149,3 +149,9 @@ USE_ASSISTANT_FOR_MEMORY_SUMMARY = False
 # 开启后遇到敏感词时自动清除Memory_Temp文件和聊天上下文
 ENABLE_SENSITIVE_CONTENT_CLEARING = True
 
+
+# 自动补充的配置项
+ENABLE_GROUP_AT_REPLY_IN_REPLIES = True
+
+# 自动补充的配置项
+PEXELS_API_KEY = ''
